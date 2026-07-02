@@ -15,7 +15,7 @@ A live, per-phase HTTP timing probe — like `curl -w` on steroids. Each timing 
 
 ## Screenshot
 
-<!-- Add screenshot of terminal output here -->
+![check-endpoint sample output](check-endpoint-sample-output.png)
 
 ---
 
