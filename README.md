@@ -295,7 +295,7 @@ Colors are auto-disabled when output is piped to a file or another command.
 ---
 ## Last Note
 
-If you find this useful, please consider starring the repo ⭐ — it helps others find it.
+If you find this useful, please consider starring the repo ⭐, it helps others find it.
 
 ---
 
