@@ -13,13 +13,13 @@ A live, per-phase HTTP timing probe, like `curl -w` on steroids. Each timing
 field prints the moment it becomes available, so a hung request visibly stalls
 at exactly the phase where it's stuck rather than silently timing out.
 
-![HTTP request phases](phases.svg)
+![HTTP request phases](images/phases.svg)
 
 ---
 
 ## Screenshot
 
-![check-endpoint sample output](check-endpoint-sample-output.png)
+![check-endpoint sample output](images/check-endpoint-sample-output.png)
 
 ---
 
@@ -36,11 +36,11 @@ at exactly the phase where it's stuck rather than silently timing out.
   more, printed at exactly the phase that failed
 - **IP pinning**: pin repeated requests to one IP to avoid measuring different
   backends across a DNS round-robin
-- **Catppuccin Mocha color theme**: timing magnitude encoded in color (cool blues
-  for fast, warm peach/red for slow); auto-disabled when output is piped
+- **Catppuccin Mocha color theme**: timing magnitude encoded in color (cool
+  blues for fast, warm peach/red for slow); auto-disabled when output is piped
 - **curl-compatible flags**: `-H`, `-d`, `-X`, `-4`/`-6`, `-F`, `-a`, `-p`/`-P`
-- **Body and header support**: POST payloads, auth headers, custom content types;
-  works against authenticated and stateful endpoints
+- **Body and header support**: POST payloads, auth headers, custom content
+  types; works against authenticated and stateful endpoints
 
 ---
 
@@ -78,8 +78,8 @@ Run with `-c 10` or `-c 20` to surface patterns invisible in a single request.
   checks, computation, rendering
 - **Queue depth behind a reverse proxy**: fast TCP but slow 1ST BYTE means the
   proxy accepted the connection but the backend was busy
-- **Backend inconsistency**: variable 1ST BYTE across runs reveals hot/cold cache
-  states, uneven DB load, or connection pool exhaustion
+- **Backend inconsistency**: variable 1ST BYTE across runs reveals hot/cold
+  cache states, uneven DB load, or connection pool exhaustion
 - **Classic pattern: high `1ST BYTE` + fast `BODY DL`**: server is slow to
   produce the response but fast to deliver it; the bottleneck is computation or
   IO server-side, not the network
@@ -91,17 +91,18 @@ Run with `-c 10` or `-c 20` to surface patterns invisible in a single request.
 - **Slow server IO**:high BODY DL relative to content size (slow disk reads, DB
   result streaming)
 - **Bandwidth throttling**: BODY DL scales disproportionately with response size
-- **Inconsistent content size**: `TOTAL BYTES` varies across `-c N` runs: reveals
-  A/B tests, CDN inconsistencies, partial or truncated responses, or outright
-  payload bugs
+- **Inconsistent content size**: `TOTAL BYTES` varies across `-c N` runs:
+  reveals A/B tests, CDN inconsistencies, partial or truncated responses, or
+  outright payload bugs
 
 ### Intermittent & Flaky Behavior
 
 - **Mixed response codes**: running `-c 20` surfaces occasional 502/503 mixed
   with 200s, revealing backend instability, pods cycling in Kubernetes, or
   upstream timeouts
-- **Intermittent timeouts**: one or two `<TO>` markers among otherwise successful
-  requests indicate connection pool exhaustion, GC pauses, or health check races
+- **Intermittent timeouts**: one or two `<TO>` markers among otherwise
+  successful requests indicate connection pool exhaustion, GC pauses, or health
+  check races
 - **Outlier requests**: a single request dramatically slower than the rest
   reveals cold cache misses, JVM garbage collection pauses, or lock contention
 
@@ -111,8 +112,8 @@ Run with `-c 10` or `-c 20` to surface patterns invisible in a single request.
   backends are in rotation; timing differences per IP identify the slow ones
 - **Isolate one backend**: use `-P` to pin all requests to a single IP; then
   switch IPs to compare them individually
-- **Backend-specific errors**: correlate the `IP ADDRESS` column with `HTTP CODE`
-  to see which backend is misbehaving
+- **Backend-specific errors**: correlate the `IP ADDRESS` column with
+  `HTTP CODE` to see which backend is misbehaving
 
 ### Authentication & Specific Endpoints
 
@@ -293,9 +294,11 @@ Colors are auto-disabled when output is piped to a file or another command.
 | Row number    | Dim                                             |
 
 ---
+
 ## Last Note
 
-If you find this useful, please consider starring the repo ⭐, it helps others find it.
+If you find this useful, please consider starring the repo ⭐, it helps others
+find it.
 
 ---
 
