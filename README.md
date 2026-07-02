@@ -25,21 +25,21 @@ at exactly the phase where it's stuck rather than silently timing out.
 
 ## Features
 
-- **Live streaming output**:each phase prints as it completes, not all at once
+- **Live streaming output**: each phase prints as it completes, not all at once
   at the end
-- **Per-phase deltas**:every column is the duration of that phase only, not a
+- **Per-phase deltas**: every column is the duration of that phase only, not a
   cumulative total
-- **Redirect accounting**:a `REDIRECT` column shows count and total time when
+- **Redirect accounting**: a `REDIRECT` column shows count and total time when
   redirects are followed, explaining why `TOTAL TIME` can exceed the sum of the
   other columns
-- **Failure markers**:`<DNS-FAIL>`, `<CONN-FAIL>`, `<TLS-FAIL>`, `<TO>`, and
+- **Failure markers**: `<DNS-FAIL>`, `<CONN-FAIL>`, `<TLS-FAIL>`, `<TO>`, and
   more, printed at exactly the phase that failed
-- **IP pinning**:pin repeated requests to one IP to avoid measuring different
+- **IP pinning**: pin repeated requests to one IP to avoid measuring different
   backends across a DNS round-robin
-- **Catppuccin Mocha color theme**:timing magnitude encoded in color (cool blues
+- **Catppuccin Mocha color theme**: timing magnitude encoded in color (cool blues
   for fast, warm peach/red for slow); auto-disabled when output is piped
-- **curl-compatible flags**:`-H`, `-d`, `-X`, `-4`/`-6`, `-F`, `-a`, `-p`/`-P`
-- **Body and header support**:POST payloads, auth headers, custom content types;
+- **curl-compatible flags**: `-H`, `-d`, `-X`, `-4`/`-6`, `-F`, `-a`, `-p`/`-P`
+- **Body and header support**: POST payloads, auth headers, custom content types;
   works against authenticated and stateful endpoints
 
 ---
