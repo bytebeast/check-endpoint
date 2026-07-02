@@ -5,7 +5,7 @@
 ![License](https://img.shields.io/badge/license-MIT-a6e3a1?style=flat-square)
 ![Python](https://img.shields.io/badge/python-3.10+-cba6f7?style=flat-square)
 
-> I originally wrote this script after discovering that curl can independently measure each phase of an HTTP connection. I've since vibe-coded it into something considerably more complete and robust.
+> I originally wrote this script after discovering that curl can independently measures each phase of an HTTP connection. I've since vibe-coded it into something considerably more complete and robust.
 
 A live, per-phase HTTP timing probe — like `curl -w` on steroids. Each timing field prints the moment it becomes available, so a hung request visibly stalls at exactly the phase where it's stuck rather than silently timing out.
 
