@@ -50,86 +50,86 @@ Run with `-c 10` or `-c 20` to surface patterns invisible in a single request.
 
 ### DNS & Resolution
 
-- **Slow or flaky resolvers**:high or variable DNS times across runs
-- **Missing local DNS cache**:DNS stays high every request instead of dropping
+- **Slow or flaky resolvers**: high or variable DNS times across runs
+- **Missing local DNS cache**: DNS stays high every request instead of dropping
   to ~0ms after the first lookup
-- **Short TTLs**:DNS spikes when the record expires mid-test
-- **`<DNS-FAIL>`**:hostname cannot be resolved at all
+- **Short TTLs**: DNS spikes when the record expires mid-test
+- **`<DNS-FAIL>`**: hostname cannot be resolved at all
 
 ### TCP & Network
 
-- **Geographic latency**:high TCP CONNECT reveals round-trip time to the server
-- **Connection backlog**:TCP time grows as the server runs out of accept queue
+- **Geographic latency**: high TCP CONNECT reveals round-trip time to the server
+- **Connection backlog**: TCP time grows as the server runs out of accept queue
   capacity under load
-- **Firewall / filtering**:`<CONN-FAIL>` on specific ports or from specific
+- **Firewall / filtering**: `<CONN-FAIL>` on specific ports or from specific
   network paths
 
 ### TLS & Security
 
-- **Missing session resumption**:TLS time stays high on every repeat request
+- **Missing session resumption**: TLS time stays high on every repeat request
   instead of dropping after the first; compare run 1 vs run 2+
-- **Slow OCSP validation or long cert chains**:consistently elevated TLS time
+- **Slow OCSP validation or long cert chains**: consistently elevated TLS time
   even without load
-- **`<TLS-FAIL>`**:expired cert, hostname mismatch, or untrusted CA
+- **`<TLS-FAIL>`**: expired cert, hostname mismatch, or untrusted CA
 
 ### Server Processing (`1ST BYTE`, most diagnostic column)
 
-- **Slow backend**:high 1ST BYTE reveals heavy server work: DB queries, auth
+- **Slow backend**: high 1ST BYTE reveals heavy server work: DB queries, auth
   checks, computation, rendering
-- **Queue depth behind a reverse proxy**:fast TCP but slow 1ST BYTE means the
+- **Queue depth behind a reverse proxy**: fast TCP but slow 1ST BYTE means the
   proxy accepted the connection but the backend was busy
-- **Backend inconsistency**:variable 1ST BYTE across runs reveals hot/cold cache
+- **Backend inconsistency**: variable 1ST BYTE across runs reveals hot/cold cache
   states, uneven DB load, or connection pool exhaustion
-- **Classic pattern: high `1ST BYTE` + fast `BODY DL`**:server is slow to
+- **Classic pattern: high `1ST BYTE` + fast `BODY DL`**: server is slow to
   produce the response but fast to deliver it; the bottleneck is computation or
   IO server-side, not the network
-- **Slow DB providing response data**:consistently high 1ST BYTE while BODY DL
+- **Slow DB providing response data**: consistently high 1ST BYTE while BODY DL
   is fast points directly at backend data retrieval time
 
 ### Body Transfer & Server-side IO
 
 - **Slow server IO**:high BODY DL relative to content size (slow disk reads, DB
   result streaming)
-- **Bandwidth throttling**:BODY DL scales disproportionately with response size
-- **Inconsistent content size**:`TOTAL BYTES` varies across `-c N` runs: reveals
+- **Bandwidth throttling**: BODY DL scales disproportionately with response size
+- **Inconsistent content size**: `TOTAL BYTES` varies across `-c N` runs: reveals
   A/B tests, CDN inconsistencies, partial or truncated responses, or outright
   payload bugs
 
 ### Intermittent & Flaky Behavior
 
-- **Mixed response codes**:running `-c 20` surfaces occasional 502/503 mixed
+- **Mixed response codes**: running `-c 20` surfaces occasional 502/503 mixed
   with 200s, revealing backend instability, pods cycling in Kubernetes, or
   upstream timeouts
-- **Intermittent timeouts**:one or two `<TO>` markers among otherwise successful
+- **Intermittent timeouts**: one or two `<TO>` markers among otherwise successful
   requests indicate connection pool exhaustion, GC pauses, or health check races
-- **Outlier requests**:a single request dramatically slower than the rest
+- **Outlier requests**: a single request dramatically slower than the rest
   reveals cold cache misses, JVM garbage collection pauses, or lock contention
 
 ### Load Balancing & Round-Robin
 
-- **Uneven backends**:without `-P`, different IPs per request show which
+- **Uneven backends**: without `-P`, different IPs per request show which
   backends are in rotation; timing differences per IP identify the slow ones
-- **Isolate one backend**:use `-P` to pin all requests to a single IP; then
+- **Isolate one backend**: use `-P` to pin all requests to a single IP; then
   switch IPs to compare them individually
-- **Backend-specific errors**:correlate the `IP ADDRESS` column with `HTTP CODE`
+- **Backend-specific errors**: correlate the `IP ADDRESS` column with `HTTP CODE`
   to see which backend is misbehaving
 
 ### Authentication & Specific Endpoints
 
-- **Authenticated APIs**:use `-H "Authorization: Bearer token"` to test
+- **Authenticated APIs**: use `-H "Authorization: Bearer token"` to test
   protected endpoints; `<AUTH-FAIL>` or 401/403 reveals auth configuration
   problems
-- **POST/PUT/PATCH endpoints**:use
+- **POST/PUT/PATCH endpoints**: use
   `-d @payload.json -H "Content-Type: application/json" -X PUT` to test write
   endpoints with real payloads
-- **Token expiry under load**:combine auth headers with `-c 20` to observe if
+- **Token expiry under load**: combine auth headers with `-c 20` to observe if
   validation degrades or fails on repeated calls
-- **Header-conditional behavior**:send routing or feature-flag headers
+- **Header-conditional behavior**: send routing or feature-flag headers
   (`-H "X-Feature: beta"`) to test conditional server logic
 
 ### Client-Side
 
-- **Non-zero `PRE-TRANSFER`**:this phase is internal libcurl bookkeeping and is
+- **Non-zero `PRE-TRANSFER`**: this phase is internal libcurl bookkeeping and is
   normally ~0ms; consistently high values indicate CPU pressure on the machine
   running the script
 
