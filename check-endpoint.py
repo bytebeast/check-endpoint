@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-check-endpoint.py - live per-phase HTTP timing probe, curl-style.
+check-endpoint.py: live per-phase HTTP timing probe, curl-style.
 
 Usage:
     ./check-endpoint.py -c 10 https://example.com
@@ -616,7 +616,7 @@ def main():
         prog="check-endpoint.py",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         description=(
-            "check-endpoint.py - live per-phase HTTP timing probe, curl-style.\n\n"
+            "check-endpoint.py: live per-phase HTTP timing probe, curl-style.\n\n"
             "Sends one or more requests to a URL and prints DNS, TCP, TLS, and\n"
             "transfer timing for each phase as it happens (not all at once at the\n"
             "end), so a hung request visibly stalls at whichever phase is stuck.\n"
