@@ -1,9 +1,9 @@
 # check-endpoint.py
 
-![Version](https://img.shields.io/badge/version-1.0.0-89b4fa?style=flat-square)
-![Status](https://img.shields.io/badge/status-beta-f9e2af?style=flat-square)
-![License](https://img.shields.io/badge/license-MIT-a6e3a1?style=flat-square)
-![Python](https://img.shields.io/badge/python-3.10+-cba6f7?style=flat-square)
+![Version](https://img.shields.io/badge/version-1.0.0-89b4fa?style=for-the-badge)
+![Status](https://img.shields.io/badge/status-beta-f9e2af?style=for-the-badge)
+![License](https://img.shields.io/badge/license-MIT-a6e3a1?style=for-the-badge)
+![Python](https://img.shields.io/badge/python-3.10+-cba6f7?style=for-the-badge)
 
 > I originally wrote this script after discovering that curl can independently
 > measure each phase of an HTTP connection. I've since vibe-coded it into
