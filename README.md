@@ -19,7 +19,7 @@ at exactly the phase where it's stuck rather than silently timing out.
 
 ## Screenshot
 
-![HTTP request phases](images/check-endpoint-phases-social.png)
+![HTTP request phases](images/check-endpoint-sample-output.png)
 
 ---
 
