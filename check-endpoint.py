@@ -44,6 +44,11 @@ except ImportError:
 APP_VERSION = "1.0.0"
 DEFAULT_USER_AGENT = f"check-endpoint/{APP_VERSION}"
 
+# CURL_VERSION_HTTP2 feature bit — set when libcurl was built with nghttp2.
+# If this is False, --http2 will be silently ignored by libcurl (it falls
+# back to HTTP/1.1 without an error). Use this flag to warn the user early.
+_HAS_HTTP2 = bool(pycurl.version_info()[4] & (1 << 16))
+
 USER_AGENTS = {
     "chrome": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -95,14 +100,16 @@ _MAUVE     = _fg("#cba6f7")   # 3xx
 _MAROON    = _fg("#eba0ac")   # 4xx
 
 # Compiled color constants
-C_HEADER   = BOLD + _BLUE         # header row — bold blue
+C_HEADER   = BOLD + _BLUE         # header row - bold blue
 C_ROW_ODD  = _TEXT                # odd data rows
-C_ROW_EVEN = _SUBTEXT0            # even data rows — slightly dimmer
+C_ROW_EVEN = _SUBTEXT0            # even data rows - slightly dimmer
 C_LINENUM  = _OVERLAY0            # row counter (#)
 C_IP       = _LAVENDER            # IP address
 C_ERROR    = BOLD + _RED          # <ERROR-MARKER> values
 C_REDIR    = _PEACH               # redirect count×time
 C_BYTES    = _GREEN               # response body size
+C_H2       = _TEAL                 # HTTP/2 (teal - preferred)
+C_H1       = _OVERLAY0             # HTTP/1.1 (dim - older protocol)
 
 
 def _col(s: str) -> str:
@@ -120,10 +127,10 @@ def _row_color(run_num: int) -> str:
 # unit suffix.  Larger/slower units use warmer, bolder colors so at a glance
 # you immediately see which phases are slow.
 #
-#   <1ms   dim overlay  (sub-millisecond — not worth highlighting)
+#   <1ms   dim overlay  (sub-millisecond - not worth highlighting)
 #   Nms    sky / teal / yellow  (fast → moderate → slow within ms range)
-#   N.NNs  bold peach  (seconds — definitely slow)
-#   NmNs   bold red    (minutes — very slow)
+#   N.NNs  bold peach  (seconds - definitely slow)
+#   NmNs   bold red    (minutes - very slow)
 #
 def _colorize_time(value: str) -> str:
     """Return an ANSI-colored timing string, or the original if color is off."""
@@ -146,7 +153,7 @@ def _colorize_time(value: str) -> str:
         num, unit = value[:-1], "s"
         return _col(BOLD + _PEACH) + num + _col(_YELLOW) + unit + RESET
 
-    # Milliseconds: "Nms" — color by magnitude
+    # Milliseconds: "Nms" - color by magnitude
     if value.endswith("ms"):
         try:
             ms = float(value[:-2])
@@ -209,6 +216,7 @@ FIELDS = [
     ["total",       "TOTAL TIME",   12],
     ["code",        "HTTP CODE",    11],
     ["bytes",       "TOTAL BYTES",  13],
+    ["proto",       "PROTO",        7],
 ]
 
 IPV4_IP_WIDTH = 16
@@ -223,7 +231,7 @@ def set_ip_column_width(width):
 
 
 LIVE_FIELD_KEYS  = ["ip", "dns", "tcp", "tls", "pretransfer", "ttfb"]
-FINAL_FIELD_KEYS = ["redirect", "download", "total", "code", "bytes"]
+FINAL_FIELD_KEYS = ["redirect", "download", "total", "code", "bytes", "proto"]
 
 TIMEOUT_MARK = "<TO>"
 ERROR_MARK   = "<ERR>"
@@ -328,7 +336,7 @@ def try_print_live_field(curl, key, prev_time, row_col=""):
     # timing color takes precedence over row color
     t_color = _colorize_time(value)
     if USE_COLOR and t_color != value:
-        # _colorize_time already returns fully escaped string — write raw
+        # _colorize_time already returns fully escaped string - write raw
         padded = value.ljust(field_width(key))
         # re-apply coloring around the padded version
         colored = _colorize_time_padded(value, padded)
@@ -378,7 +386,30 @@ def _colorize_time_padded(value: str, padded: str) -> str:
     return padded
 
 
+def get_proto_label(curl) -> str:
+    """Short label for the HTTP version actually used for the transfer.
+
+    CURLINFO_HTTP_VERSION return values (these are NOT the same as the
+    CURL_HTTP_VERSION_* request options — they are a separate enum):
+        0 = unknown / not set
+        1 = HTTP/1.0
+        2 = HTTP/1.1
+        3 = HTTP/2
+        4 = HTTP/3
+    """
+    try:
+        v = curl.getinfo(pycurl.INFO_HTTP_VERSION)
+        if v == 4: return "h3"
+        if v == 3: return "h2"
+        if v == 1: return "h1.0"
+    except Exception:
+        pass
+    return "h1"
+
+
 def get_final_value(curl, key):
+    if key == "proto":
+        return get_proto_label(curl)
     if key == "redirect":
         count = int(curl.getinfo(pycurl.REDIRECT_COUNT))
         if count == 0:
@@ -417,6 +448,14 @@ def _write_final_cell(key: str, value: str, width: int, row_col: str) -> None:
         colored = _colorize_time_padded(value, padded)
         sys.stdout.write(colored)
         sys.stdout.flush()
+        return
+
+    if key == "proto":
+        proto_color = (
+            _col(C_H2) if value == "h2" else
+            _col(C_H1)
+        )
+        write_cell(value, width, color=proto_color)
         return
 
     if key == "redirect":
@@ -469,6 +508,7 @@ def run_once(
     method=None,
     force_dns=False,
     resolve=None,
+    http_version=None,
 ):
     rcol = _row_color(run_num)   # base color for this row
 
@@ -488,6 +528,9 @@ def run_once(
         curl.IPRESOLVE,
         pycurl.IPRESOLVE_V6 if ip_version == "6" else pycurl.IPRESOLVE_V4,
     )
+
+    if http_version is not None:
+        curl.setopt(curl.HTTP_VERSION, http_version)
 
     if resolve:
         curl.setopt(curl.RESOLVE, resolve)
@@ -625,6 +668,7 @@ def main():
         ),
         epilog=f"""\
 FIELDS REPORTED (in column order)
+  PROTO          HTTP version actually used: h1 (HTTP/1.1) or h2 (HTTP/2)
   IP ADDRESS     resolved IP of the remote host
   DNS            time spent on DNS lookup (that phase only)
   TCP CONNECT    time spent on the TCP handshake (that phase only)
@@ -633,7 +677,7 @@ FIELDS REPORTED (in column order)
   1ST BYTE       time from request sent to first byte of the response body
   REDIRECT       redirects followed: count and total time (blank if none).
                  REDIRECT time is why TOTAL TIME can exceed the sum of other
-                 columns — it accounts for all redirect round-trips.
+                 columns - it accounts for all redirect round-trips.
   BODY DL        time to receive the full response body after the first byte
   TOTAL TIME     total end-to-end request time including any redirects
   HTTP CODE      response status code
@@ -645,8 +689,10 @@ FIELDS REPORTED (in column order)
   All times are shown in human-readable units (e.g. 17ms, 1.20s, 1m30s).
   All byte sizes are shown in human-readable units (e.g. 980B, 1.2KB, 4.0MB).
 
-COLOR SCHEME (Catppuccin Mocha — auto-disabled when output is piped)
+COLOR SCHEME (Catppuccin Mocha - auto-disabled when output is piped)
   Header row     bold blue
+  PROTO h2       teal (HTTP/2 - preferred, modern)
+  PROTO h1       dim (HTTP/1.1 - older protocol)
   Odd rows       primary text color
   Even rows      slightly dimmed text color
   <1ms           dim (sub-millisecond, not worth highlighting)
@@ -723,14 +769,14 @@ WHAT IT CAN FIND
     - Certificate problems: <TLS-FAIL> for expired cert, hostname mismatch,
       or untrusted CA
 
-  Server Processing (1ST BYTE — most diagnostic column)
+  Server Processing (1ST BYTE - most diagnostic column)
     - Slow backend: high 1ST BYTE reveals heavy server work (DB queries,
       auth checks, rendering, computation) before the first byte is sent
     - Queue depth behind a reverse proxy: fast TCP + slow 1ST BYTE means
       the proxy accepted the connection but the backend was busy
     - Backend inconsistency: variable 1ST BYTE across runs reveals hot/cold
       cache states, uneven DB load, or connection pool exhaustion
-    - Classic pattern — high 1ST BYTE + fast BODY DL: the server is slow
+    - Classic pattern - high 1ST BYTE + fast BODY DL: the server is slow
       to produce the response but fast to send it once ready; the problem
       is computation or IO on the server, not the network
 
@@ -738,7 +784,7 @@ WHAT IT CAN FIND
     - Slow server IO: high BODY DL relative to content size (slow disk reads,
       DB streaming, rate-limited send buffers)
     - Bandwidth throttling: BODY DL grows disproportionately with response size
-    - Inconsistent content size: TOTAL BYTES varies across -c N runs — reveals
+    - Inconsistent content size: TOTAL BYTES varies across -c N runs - reveals
       A/B testing, CDN inconsistencies, partial/truncated responses, or bugs
       where the server occasionally sends the wrong payload
 
@@ -747,7 +793,7 @@ WHAT IT CAN FIND
       instability, pods cycling in Kubernetes, or upstream timeouts
     - Occasional <TO> markers among otherwise successful runs indicate
       connection pool exhaustion, GC pauses, or health check races
-    - Outlier requests dramatically slower than the rest — cold cache misses,
+    - Outlier requests dramatically slower than the rest - cold cache misses,
       JVM garbage collection pauses, or single-threaded lock contention
 
   Load Balancing & Round-Robin
@@ -759,7 +805,7 @@ WHAT IT CAN FIND
       CODE column to see which backend is returning errors
 
   Authentication & Specific Endpoints
-    - Test authenticated APIs: -H "Authorization: Bearer token" — a 401/403
+    - Test authenticated APIs: -H "Authorization: Bearer token" - a 401/403
       or <AUTH-FAIL> points to auth configuration issues
     - Test POST/PUT/PATCH endpoints: -d @payload.json combined with
       -H "Content-Type: application/json" and -X PUT/-X PATCH
@@ -772,6 +818,33 @@ WHAT IT CAN FIND
     - Non-zero PRE-TRANSFER on every request: this phase is internal libcurl
       bookkeeping and is normally ~0ms; consistently high values indicate
       CPU pressure on the machine running check-endpoint.py itself
+
+HTTP/2 SUPPORT
+  --http2
+    Request HTTP/2 via ALPN negotiation on HTTPS connections. libcurl sends
+    the "h2" ALPN token during the TLS handshake; the server replies with
+    "h2" if it supports HTTP/2 or "http/1.1" to fall back. The PROTO column
+    shows which version was actually used.
+
+    Without --http2, libcurl defaults to HTTP/1.1 even if the server supports
+    HTTP/2. Use --http2 explicitly to verify whether a server speaks HTTP/2.
+
+    Requires libcurl built with nghttp2. Check with: curl --version | grep HTTP2
+
+  --http2-prior-knowledge
+    Send HTTP/2 frames directly over a plain http:// connection without TLS
+    (h2c - HTTP/2 cleartext, RFC 7540 Section 3.4). Only use when you
+    control both client and server and know the server accepts h2c.
+    Most public web servers reject this; use --http2 for HTTPS instead.
+
+  HTTP/2 and the timing columns
+    HTTP/2 multiplexes requests over a single persistent connection.
+    On repeated -c N runs:
+    - Run 1: full DNS + TCP + TLS handshake
+    - Run 2+: TCP CONNECT and TLS HANDSHAKE drop to <1ms (connection reused)
+    This connection reuse is one of HTTP/2's main performance benefits.
+    Use -F (force-dns) to get fresh connections and see the full handshake
+    on every run rather than the reuse shortcut.
 
 EXAMPLES
   Basic single request:
@@ -823,6 +896,26 @@ NOTE ON -p/-P (IP pinning)
     ip_group.add_argument("-4", "--ipv4", action="store_true", help="force IPv4 resolution (default)")
     ip_group.add_argument("-6", "--ipv6", action="store_true", help="force IPv6 resolution")
 
+    http_group = parser.add_mutually_exclusive_group()
+    http_group.add_argument(
+        "--http2",
+        action="store_true",
+        help=(
+            "request HTTP/2 via ALPN (requires HTTPS). "
+            "Falls back to HTTP/1.1 if the server does not support HTTP/2. "
+            "Requires libcurl built with nghttp2."
+        ),
+    )
+    http_group.add_argument(
+        "--http2-prior-knowledge",
+        dest="http2_prior_knowledge",
+        action="store_true",
+        help=(
+            "send HTTP/2 frames directly on a plain http:// connection (h2c, RFC 7540 §3.4). "
+            "Only use when the server is known to speak HTTP/2 cleartext."
+        ),
+    )
+
     parser.add_argument(
         "-a", "--user-agent", dest="user_agent_alias",
         choices=sorted(USER_AGENTS.keys()), default=None,
@@ -860,6 +953,31 @@ NOTE ON -p/-P (IP pinning)
         pin_resolve, pinned_ip, pinned_host = build_pin_resolve(args.url, "auto", ip_version)
         print(f"# pinned: {pinned_host} -> {pinned_ip}")
 
+    http_version = None
+    if getattr(args, 'http2', False):
+        if not _HAS_HTTP2:
+            sys.stderr.write(
+                "error: --http2 requested but your libcurl was not built with nghttp2.\n\n"
+                "Diagnose:\n"
+                "  python3 -c \"import pycurl; print(pycurl.version_info())\"\n"
+                "  curl --version | grep HTTP2\n\n"
+                "Fix on macOS (Homebrew):\n"
+                "  brew install curl nghttp2\n"
+                "  pip uninstall pycurl\n"
+                "  PYCURL_CURL_CONFIG=$(brew --prefix curl)/bin/curl-config \\\n"
+                "    pip install --no-cache-dir --compile pycurl\n\n"
+                "Fix on Linux (Debian/Ubuntu):\n"
+                "  sudo apt install libcurl4-openssl-dev libnghttp2-dev\n"
+                "  pip uninstall pycurl && pip install --no-cache-dir pycurl\n"
+            )
+            sys.exit(1)
+        http_version = pycurl.CURL_HTTP_VERSION_2TLS
+    elif getattr(args, 'http2_prior_knowledge', False):
+        if not _HAS_HTTP2:
+            sys.stderr.write("error: --http2-prior-knowledge requires libcurl built with nghttp2. See --http2 error for fix.\n")
+            sys.exit(1)
+        http_version = pycurl.CURL_HTTP_VERSION_2_PRIOR_KNOWLEDGE
+
     print_header()
     for i in range(1, args.count + 1):
         run_once(
@@ -867,6 +985,7 @@ NOTE ON -p/-P (IP pinning)
             ip_version=ip_version, user_agent=user_agent,
             headers=args.headers, data=data, method=args.method,
             force_dns=args.force_dns, resolve=pin_resolve,
+            http_version=http_version,
         )
 
 
