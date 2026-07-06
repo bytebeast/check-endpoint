@@ -6,7 +6,7 @@
   <img alt="Status" src="https://img.shields.io/badge/status-beta-f9e2af?style=for-the-badge">
   <img alt="License" src="https://img.shields.io/badge/license-MIT-a6e3a1?style=for-the-badge">
   <img alt="Python" src="https://img.shields.io/badge/python-3.10+-cba6f7?style=for-the-badge">
-  <a href="https://github.com/bytebeat/check-endpoint"><img src="https://img.shields.io/github/stars/bytebeast/check-endpoint?style=for-the-badge" alt="GitHub Stars"></a>
+  <a href="https://github.com/bytebeat/check-endpoint/"><img src="https://img.shields.io/github/stars/bytebeast/check-endpoint?style=for-the-badge" alt="GitHub Stars"></a>
 </p>
 
 > I originally wrote this script after discovering that curl can independently
