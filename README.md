@@ -1,9 +1,13 @@
 # check-endpoint.py
 
-![Version](https://img.shields.io/badge/version-1.0.0-89b4fa?style=for-the-badge)
-![Status](https://img.shields.io/badge/status-beta-f9e2af?style=for-the-badge)
-![License](https://img.shields.io/badge/license-MIT-a6e3a1?style=for-the-badge)
-![Python](https://img.shields.io/badge/python-3.10+-cba6f7?style=for-the-badge)
+
+<p align="center">
+  <a href="https://github.com/netdata/netdata/"><img src="https://img.shields.io/github/stars/netdata/netdata?style=social" alt="GitHub Stars">
+  <img alt="Version" src="https://img.shields.io/badge/version-1.0.0-89b4fa?style=for-the-badge">
+  <img alt="Status" src="https://img.shields.io/badge/status-beta-f9e2af?style=for-the-badge">
+  <img alt="License" src="https://img.shields.io/badge/license-MIT-a6e3a1?style=for-the-badge">
+  <img alt="Python" src="https://img.shields.io/badge/python-3.10+-cba6f7?style=for-the-badge">
+</p>
 
 > I originally wrote this script after discovering that curl can independently
 > measure each phase of an HTTP connection. I've since vibe-coded it into
@@ -13,7 +17,9 @@ A live, per-phase HTTP timing probe - like `curl -w` on steroids. Each timing
 field prints the moment it becomes available, so a hung request visibly stalls
 at exactly the phase where it's stuck rather than silently timing out.
 
-![HTTP request phases](images/phases.png)
+<p align="center">
+  <img src="images/phases.png" alt="HTTP request phases">
+</p>
 
 ---
 
