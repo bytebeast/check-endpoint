@@ -23,6 +23,7 @@ Linux users may need:                        apt install libcurl4-openssl-dev
 import argparse
 import socket
 import sys
+import time
 from urllib.parse import urlsplit
 
 try:
@@ -248,6 +249,17 @@ FIELDS = [
 
 IPV4_IP_WIDTH = 16
 IPV6_IP_WIDTH = 42
+
+# Extra columns shown only in --stream (-S) mode: per-chunk arrival timing
+# for testing SSE / chunked-transfer responses. Appended to FIELDS and
+# FINAL_FIELD_KEYS at startup in main() if -S is passed - never present
+# otherwise, so normal runs are unaffected.
+STREAM_FIELDS = [
+    ["chunks", "CHUNKS", 8],
+    ["avggap", "AVG GAP", 10],
+    ["maxgap", "MAX GAP", 10],
+]
+STREAM_FIELD_KEYS = [f[0] for f in STREAM_FIELDS]
 
 
 def set_ip_column_width(width):
@@ -479,7 +491,17 @@ def _write_final_cell(key: str, value: str, width: int, row_col: str) -> None:
         write_cell(value, width, color=C_ERROR)
         return
 
-    if key in ("dns", "tcp", "tls", "pretransfer", "ttfb", "download", "total"):
+    if key in (
+        "dns",
+        "tcp",
+        "tls",
+        "pretransfer",
+        "ttfb",
+        "download",
+        "total",
+        "avggap",
+        "maxgap",
+    ):
         padded = value.ljust(width)
         colored = _colorize_time_padded(value, padded)
         sys.stdout.write(colored)
@@ -550,6 +572,7 @@ def run_once(
     force_dns=False,
     resolve=None,
     http_version=None,
+    stream_mode=False,
 ):
     rcol = _row_color(run_num)  # base color for this row
 
@@ -557,7 +580,18 @@ def run_once(
 
     curl = pycurl.Curl()
     curl.setopt(curl.URL, url)
-    curl.setopt(curl.WRITEFUNCTION, lambda chunk: len(chunk))
+
+    chunk_times = []
+    if stream_mode:
+
+        def _write_cb(chunk):
+            chunk_times.append(time.perf_counter())
+            return len(chunk)
+
+        curl.setopt(curl.WRITEFUNCTION, _write_cb)
+    else:
+        curl.setopt(curl.WRITEFUNCTION, lambda chunk: len(chunk))
+
     curl.setopt(curl.FOLLOWLOCATION, True)
     curl.setopt(curl.TIMEOUT_MS, int(timeout * 1000))
     curl.setopt(curl.CONNECTTIMEOUT_MS, int(timeout * 1000))
@@ -592,6 +626,8 @@ def run_once(
 
     multi = pycurl.CurlMulti()
     multi.add_handle(curl)
+
+    request_start = time.perf_counter()
 
     pointer = 0
     prev_time = 0.0
@@ -654,8 +690,22 @@ def run_once(
             write_empty_cell(key, field_width(key))
         pointer += 1
 
+    stream_stats = {}
+    if stream_mode:
+        if chunk_times:
+            deltas = [chunk_times[0] - request_start] + [
+                chunk_times[i] - chunk_times[i - 1] for i in range(1, len(chunk_times))
+            ]
+            stream_stats = {
+                "chunks": str(len(chunk_times)),
+                "avggap": human_time(sum(deltas) / len(deltas)),
+                "maxgap": human_time(max(deltas)),
+            }
+        else:
+            stream_stats = {"chunks": "0", "avggap": "", "maxgap": ""}
+
     for key in FINAL_FIELD_KEYS:
-        value = get_final_value(curl, key)
+        value = stream_stats[key] if key in stream_stats else get_final_value(curl, key)
         _write_final_cell(key, value, field_width(key), rcol)
 
     curl.close()
@@ -730,6 +780,12 @@ FIELDS REPORTED (in column order)
 
   Every column except TOTAL TIME is a per-phase delta.
   DNS + TCP + TLS + PRE-TRANSFER + 1ST BYTE + REDIRECT + BODY DL ≈ TOTAL TIME
+
+  With -S/--stream, three extra columns are appended:
+  CHUNKS         number of chunks the response body arrived in
+  AVG GAP        average time between consecutive chunk arrivals
+  MAX GAP        longest gap between any two consecutive chunks
+  These only appear with -S; a normal run's columns are unaffected.
 
   All times are shown in human-readable units (e.g. 17ms, 1.20s, 1m30s).
   All byte sizes are shown in human-readable units (e.g. 980B, 1.2KB, 4.0MB).
@@ -932,6 +988,22 @@ EXAMPLES
   Pin all repeats to a specific known IP:
       ./check-endpoint.py -c 10 -p 93.184.216.34 https://example.com
 
+  Test an SSE / chunked-streaming endpoint and see per-chunk cadence:
+      ./check-endpoint.py -c 10 -S -H "Accept: text/event-stream" https://example.com/stream
+
+STREAMING RESPONSES (SSE / CHUNKED TRANSFER) - THE -S/--stream FLAG
+  Without -S, a streaming response is still measured meaningfully:
+  1ST BYTE is the time until the first chunk/token arrives (streaming
+  start latency), and BODY DL is the total duration of the whole stream
+  from first byte to last. What you don't get without -S is the *rhythm*
+  of the stream - whether chunks arrive steadily or in bursts with stalls.
+
+  -S records a timestamp for every chunk as it arrives (not just the
+  first and last) and adds CHUNKS / AVG GAP / MAX GAP columns. A high
+  MAX GAP relative to AVG GAP means the stream stalled somewhere in the
+  middle even though the overall BODY DL time looked fine - useful for
+  catching intermittent stutter that an aggregate-only view would hide.
+
 NOTE ON -p/-P (IP pinning)
   When pinning, libcurl is told the IP directly and skips real DNS
   resolution for that hostname, so the DNS column will read ~0ms -- that's
@@ -1037,8 +1109,22 @@ NOTE ON -p/-P (IP pinning)
         action="store_true",
         help="resolve once and pin all repeats to that IP",
     )
+    parser.add_argument(
+        "-S",
+        "--stream",
+        action="store_true",
+        help=(
+            "time every chunk as it arrives (not just first/last byte) and report "
+            "extra CHUNKS / AVG GAP / MAX GAP columns - useful for testing SSE or "
+            "chunked-transfer streaming responses"
+        ),
+    )
 
     args = parser.parse_args()
+
+    if args.stream:
+        FIELDS.extend(STREAM_FIELDS)
+        FINAL_FIELD_KEYS.extend(STREAM_FIELD_KEYS)
 
     ip_version = "6" if args.ipv6 else "4"
     set_ip_column_width(IPV6_IP_WIDTH if ip_version == "6" else IPV4_IP_WIDTH)
@@ -1103,6 +1189,7 @@ NOTE ON -p/-P (IP pinning)
             force_dns=args.force_dns,
             resolve=pin_resolve,
             http_version=http_version,
+            stream_mode=args.stream,
         )
 
 
