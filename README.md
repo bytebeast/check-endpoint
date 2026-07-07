@@ -9,7 +9,7 @@
   <a href="https://github.com/bytebeast/check-endpoint/actions/workflows/github-code-scanning/codeql">
     <img src="https://github.com/bytebeast/check-endpoint/actions/workflows/github-code-scanning/codeql/badge.svg" alt="CodeQL" />
   </a>
-  <a href="https://github.com/bytebeast/check-endpoint/"><img src="https://img.shields.io/github/stars/bytebeast/check-endpoint?style=flat" alt="GitHub Stars"></a>
+  <a href="https://github.com/bytebeast/check-endpoint/"><img src="https://img.shields.io/github/stars/bytebeast/check-endpoint?style=flat&label=Stars" alt="GitHub Stars"></a>
 </p>
 
 > I originally wrote this script after discovering that curl can independently
