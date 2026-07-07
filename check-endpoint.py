@@ -76,7 +76,8 @@ USER_AGENTS = {
 USE_COLOR = sys.stdout.isatty()
 
 RESET = "\033[0m"
-BOLD  = "\033[1m"
+BOLD = "\033[1m"
+
 
 def _fg(h: str) -> str:
     """24-bit foreground color from a hex string."""
@@ -84,32 +85,33 @@ def _fg(h: str) -> str:
     r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
     return f"\033[38;2;{r};{g};{b}m"
 
+
 # Mocha palette references
-_TEXT      = _fg("#cdd6f4")   # primary text
-_SUBTEXT0  = _fg("#a6adc8")   # secondary text (even rows)
-_OVERLAY0  = _fg("#6c7086")   # dim (row numbers, sub-ms times)
-_BLUE      = _fg("#89b4fa")   # header labels
-_LAVENDER  = _fg("#b4befe")   # IP addresses
-_SKY       = _fg("#89dceb")   # fast ms (< 10 ms)
-_TEAL      = _fg("#94e2d5")   # moderate ms (10–99 ms)
-_YELLOW    = _fg("#f9e2af")   # slow ms (≥ 100 ms)
-_PEACH     = _fg("#fab387")   # seconds / redirect
-_RED       = _fg("#f38ba8")   # minutes / errors / 5xx
-_GREEN     = _fg("#a6e3a1")   # 2xx / bytes
-_MAUVE     = _fg("#cba6f7")   # 3xx
-_MAROON    = _fg("#eba0ac")   # 4xx
+_TEXT = _fg("#cdd6f4")  # primary text
+_SUBTEXT0 = _fg("#a6adc8")  # secondary text (even rows)
+_OVERLAY0 = _fg("#6c7086")  # dim (row numbers, sub-ms times)
+_BLUE = _fg("#89b4fa")  # header labels
+_LAVENDER = _fg("#b4befe")  # IP addresses
+_SKY = _fg("#89dceb")  # fast ms (< 10 ms)
+_TEAL = _fg("#94e2d5")  # moderate ms (10–99 ms)
+_YELLOW = _fg("#f9e2af")  # slow ms (≥ 100 ms)
+_PEACH = _fg("#fab387")  # seconds / redirect
+_RED = _fg("#f38ba8")  # minutes / errors / 5xx
+_GREEN = _fg("#a6e3a1")  # 2xx / bytes
+_MAUVE = _fg("#cba6f7")  # 3xx
+_MAROON = _fg("#eba0ac")  # 4xx
 
 # Compiled color constants
-C_HEADER   = BOLD + _BLUE         # header row - bold blue
-C_ROW_ODD  = _TEXT                # odd data rows
-C_ROW_EVEN = _SUBTEXT0            # even data rows - slightly dimmer
-C_LINENUM  = _OVERLAY0            # row counter (#)
-C_IP       = _LAVENDER            # IP address
-C_ERROR    = BOLD + _RED          # <ERROR-MARKER> values
-C_REDIR    = _PEACH               # redirect count×time
-C_BYTES    = _GREEN               # response body size
-C_H2       = _TEAL                 # HTTP/2 (teal - preferred)
-C_H1       = _OVERLAY0             # HTTP/1.1 (dim - older protocol)
+C_HEADER = BOLD + _BLUE  # header row - bold blue
+C_ROW_ODD = _TEXT  # odd data rows
+C_ROW_EVEN = _SUBTEXT0  # even data rows - slightly dimmer
+C_LINENUM = _OVERLAY0  # row counter (#)
+C_IP = _LAVENDER  # IP address
+C_ERROR = BOLD + _RED  # <ERROR-MARKER> values
+C_REDIR = _PEACH  # redirect count×time
+C_BYTES = _GREEN  # response body size
+C_H2 = _TEAL  # HTTP/2 (teal - preferred)
+C_H1 = _OVERLAY0  # HTTP/1.1 (dim - older protocol)
 
 
 def _col(s: str) -> str:
@@ -119,6 +121,31 @@ def _col(s: str) -> str:
 
 def _row_color(run_num: int) -> str:
     return _col(C_ROW_ODD if run_num % 2 == 1 else C_ROW_EVEN)
+
+
+# ── empty-cell conventions ────────────────────────────────────────────────────
+#
+# A cell can come back empty for two different reasons, and we distinguish
+# them visually (both rendered dim/grey, same shade as the row-number column):
+#
+#   "n/a"   the phase is structurally not applicable to this request, e.g.
+#           TLS HANDSHAKE on a plain http:// URL (there is no TLS phase at
+#           all), or REDIRECT when no redirects were followed.
+#   "-"     the field is empty for any other reason (truncated by a failure
+#           mid-transfer, a value libcurl never reported, etc).
+#
+NA_TEXT = "n/a"
+DASH_TEXT = "-"
+NA_FIELDS = {"tls", "redirect"}
+
+
+def _empty_cell_text(key: str) -> str:
+    return NA_TEXT if key in NA_FIELDS else DASH_TEXT
+
+
+def write_empty_cell(key: str, width: int) -> None:
+    """Write the grey n/a-or-dash placeholder for an empty field."""
+    write_cell(_empty_cell_text(key), width, color=_col(C_LINENUM))
 
 
 # ── timing colorizer ──────────────────────────────────────────────────────────
@@ -160,9 +187,9 @@ def _colorize_time(value: str) -> str:
         except ValueError:
             return value
         if ms < 10:
-            num_c, unit_c = _col(_SKY),    _col(_TEAL)
+            num_c, unit_c = _col(_SKY), _col(_TEAL)
         elif ms < 100:
-            num_c, unit_c = _col(_TEAL),   _col(_SKY)
+            num_c, unit_c = _col(_TEAL), _col(_SKY)
         else:
             num_c, unit_c = _col(_YELLOW), _col(_PEACH)
         return num_c + value[:-2] + unit_c + "ms" + RESET
@@ -180,7 +207,7 @@ def _colorize_bytes(value: str) -> str:
         return _col(BOLD + _PEACH) + value + RESET
     if value.endswith("KB"):
         return _col(_YELLOW) + value + RESET
-    return _col(_GREEN) + value + RESET   # Bytes
+    return _col(_GREEN) + value + RESET  # Bytes
 
 
 def _colorize_code(value: str) -> str:
@@ -191,32 +218,32 @@ def _colorize_code(value: str) -> str:
     except ValueError:
         return value
     if 200 <= code < 300:
-        return _col(_GREEN)              + value + RESET
+        return _col(_GREEN) + value + RESET
     if 300 <= code < 400:
-        return _col(_MAUVE)              + value + RESET
+        return _col(_MAUVE) + value + RESET
     if 400 <= code < 500:
-        return _col(_MAROON)             + value + RESET
+        return _col(_MAROON) + value + RESET
     if 500 <= code < 600:
-        return _col(BOLD + _RED)         + value + RESET
+        return _col(BOLD + _RED) + value + RESET
     return value
 
 
 # ── field definitions ─────────────────────────────────────────────────────────
 
 FIELDS = [
-    ["num",         "#",            4],
-    ["ip",          "IP ADDRESS",   16],
-    ["dns",         "DNS",          9],
-    ["tcp",         "TCP CONNECT",  13],
-    ["tls",         "TLS HANDSHAKE",15],
+    ["num", "#", 4],
+    ["ip", "IP ADDRESS", 16],
+    ["dns", "DNS", 9],
+    ["tcp", "TCP CONNECT", 13],
+    ["tls", "TLS HANDSHAKE", 15],
     ["pretransfer", "PRE-TRANSFER", 14],
-    ["ttfb",        "1ST BYTE",     10],
-    ["redirect",    "REDIRECT",     13],
-    ["download",    "BODY DL",      10],
-    ["total",       "TOTAL TIME",   12],
-    ["code",        "HTTP CODE",    11],
-    ["bytes",       "TOTAL BYTES",  13],
-    ["proto",       "PROTO",        7],
+    ["ttfb", "1ST BYTE", 10],
+    ["redirect", "REDIRECT", 13],
+    ["download", "BODY DL", 10],
+    ["total", "TOTAL TIME", 12],
+    ["code", "HTTP CODE", 11],
+    ["bytes", "TOTAL BYTES", 13],
+    ["proto", "PROTO", 7],
 ]
 
 IPV4_IP_WIDTH = 16
@@ -230,28 +257,28 @@ def set_ip_column_width(width):
             return
 
 
-LIVE_FIELD_KEYS  = ["ip", "dns", "tcp", "tls", "pretransfer", "ttfb"]
+LIVE_FIELD_KEYS = ["ip", "dns", "tcp", "tls", "pretransfer", "ttfb"]
 FINAL_FIELD_KEYS = ["redirect", "download", "total", "code", "bytes", "proto"]
 
 TIMEOUT_MARK = "<TO>"
-ERROR_MARK   = "<ERR>"
+ERROR_MARK = "<ERR>"
 
 ERROR_MARKERS = {
-    pycurl.E_COULDNT_RESOLVE_PROXY:    "<DNS-FAIL>",
-    pycurl.E_COULDNT_RESOLVE_HOST:     "<DNS-FAIL>",
-    pycurl.E_COULDNT_CONNECT:          "<CONN-FAIL>",
-    pycurl.E_OPERATION_TIMEDOUT:       TIMEOUT_MARK,
-    pycurl.E_SSL_CONNECT_ERROR:        "<TLS-FAIL>",
-    pycurl.E_SSL_CERTPROBLEM:          "<TLS-FAIL>",
-    pycurl.E_SSL_CACERT:               "<TLS-FAIL>",
+    pycurl.E_COULDNT_RESOLVE_PROXY: "<DNS-FAIL>",
+    pycurl.E_COULDNT_RESOLVE_HOST: "<DNS-FAIL>",
+    pycurl.E_COULDNT_CONNECT: "<CONN-FAIL>",
+    pycurl.E_OPERATION_TIMEDOUT: TIMEOUT_MARK,
+    pycurl.E_SSL_CONNECT_ERROR: "<TLS-FAIL>",
+    pycurl.E_SSL_CERTPROBLEM: "<TLS-FAIL>",
+    pycurl.E_SSL_CACERT: "<TLS-FAIL>",
     pycurl.E_PEER_FAILED_VERIFICATION: "<TLS-FAIL>",
-    pycurl.E_GOT_NOTHING:              "<NO-DATA>",
-    pycurl.E_SEND_ERROR:               "<SEND-FAIL>",
-    pycurl.E_RECV_ERROR:               "<RECV-FAIL>",
-    pycurl.E_TOO_MANY_REDIRECTS:       "<RDR-FAIL>",
-    pycurl.E_URL_MALFORMAT:            "<BAD-URL>",
-    pycurl.E_LOGIN_DENIED:             "<AUTH-FAIL>",
-    pycurl.E_REMOTE_ACCESS_DENIED:     "<DENIED>",
+    pycurl.E_GOT_NOTHING: "<NO-DATA>",
+    pycurl.E_SEND_ERROR: "<SEND-FAIL>",
+    pycurl.E_RECV_ERROR: "<RECV-FAIL>",
+    pycurl.E_TOO_MANY_REDIRECTS: "<RDR-FAIL>",
+    pycurl.E_URL_MALFORMAT: "<BAD-URL>",
+    pycurl.E_LOGIN_DENIED: "<AUTH-FAIL>",
+    pycurl.E_REMOTE_ACCESS_DENIED: "<DENIED>",
 }
 
 
@@ -260,6 +287,7 @@ def marker_for_errno(errno):
 
 
 # ── human-readable formatting ─────────────────────────────────────────────────
+
 
 def human_time(seconds):
     if seconds is None:
@@ -288,6 +316,7 @@ def human_bytes(n):
 
 # ── output helpers ────────────────────────────────────────────────────────────
 
+
 def write_cell(text: str, width: int, color: str = "", reset: bool = True) -> None:
     """
     Write a padded cell. Padding is applied to the PLAIN text first so that
@@ -312,11 +341,11 @@ def print_header():
 # ── live field helpers ────────────────────────────────────────────────────────
 
 RAW_TIME_GETTERS = {
-    "dns":         lambda c: c.getinfo(pycurl.NAMELOOKUP_TIME),
-    "tcp":         lambda c: c.getinfo(pycurl.CONNECT_TIME),
-    "tls":         lambda c: c.getinfo(pycurl.APPCONNECT_TIME),
+    "dns": lambda c: c.getinfo(pycurl.NAMELOOKUP_TIME),
+    "tcp": lambda c: c.getinfo(pycurl.CONNECT_TIME),
+    "tls": lambda c: c.getinfo(pycurl.APPCONNECT_TIME),
     "pretransfer": lambda c: c.getinfo(pycurl.PRETRANSFER_TIME),
-    "ttfb":        lambda c: c.getinfo(pycurl.STARTTRANSFER_TIME),
+    "ttfb": lambda c: c.getinfo(pycurl.STARTTRANSFER_TIME),
 }
 
 
@@ -366,7 +395,7 @@ def _colorize_time_padded(value: str, padded: str) -> str:
 
     if value.endswith("s") and not value.endswith("ms"):
         num, unit = value[:-1], "s"
-        spaces = padded[len(value):]
+        spaces = padded[len(value) :]
         return _col(BOLD + _PEACH) + num + _col(_YELLOW) + unit + RESET + spaces
 
     if value.endswith("ms"):
@@ -375,12 +404,12 @@ def _colorize_time_padded(value: str, padded: str) -> str:
         except ValueError:
             return padded
         if ms < 10:
-            num_c, unit_c = _col(_SKY),    _col(_TEAL)
+            num_c, unit_c = _col(_SKY), _col(_TEAL)
         elif ms < 100:
-            num_c, unit_c = _col(_TEAL),   _col(_SKY)
+            num_c, unit_c = _col(_TEAL), _col(_SKY)
         else:
             num_c, unit_c = _col(_YELLOW), _col(_PEACH)
-        spaces = padded[len(value):]
+        spaces = padded[len(value) :]
         return num_c + value[:-2] + unit_c + "ms" + RESET + spaces
 
     return padded
@@ -399,9 +428,12 @@ def get_proto_label(curl) -> str:
     """
     try:
         v = curl.getinfo(pycurl.INFO_HTTP_VERSION)
-        if v == 4: return "h3"
-        if v == 3: return "h2"
-        if v == 1: return "h1.0"
+        if v == 4:
+            return "h3"
+        if v == 3:
+            return "h2"
+        if v == 1:
+            return "h1.0"
     except Exception:
         pass
     return "h1"
@@ -418,7 +450,7 @@ def get_final_value(curl, key):
         return f"{count}\u00d7 {human_time(rtime)}"
     if key == "download":
         total = curl.getinfo(pycurl.TOTAL_TIME)
-        ttfb  = curl.getinfo(pycurl.STARTTRANSFER_TIME)
+        ttfb = curl.getinfo(pycurl.STARTTRANSFER_TIME)
         return human_time(max(total - ttfb, 0.0))
     if key == "total":
         return human_time(curl.getinfo(pycurl.TOTAL_TIME))
@@ -435,26 +467,27 @@ def get_final_value(curl, key):
 
 def _write_final_cell(key: str, value: str, width: int, row_col: str) -> None:
     """Write a final-phase cell with the right color for its content type."""
-    if not USE_COLOR or not value:
+    if not value:
+        write_empty_cell(key, width)
+        return
+
+    if not USE_COLOR:
         write_cell(value, width, color=row_col)
         return
 
-    if value.startswith("<"):                     # error marker
+    if value.startswith("<"):  # error marker
         write_cell(value, width, color=C_ERROR)
         return
 
     if key in ("dns", "tcp", "tls", "pretransfer", "ttfb", "download", "total"):
-        padded  = value.ljust(width)
+        padded = value.ljust(width)
         colored = _colorize_time_padded(value, padded)
         sys.stdout.write(colored)
         sys.stdout.flush()
         return
 
     if key == "proto":
-        proto_color = (
-            _col(C_H2) if value == "h2" else
-            _col(C_H1)
-        )
+        proto_color = _col(C_H2) if value == "h2" else _col(C_H1)
         write_cell(value, width, color=proto_color)
         return
 
@@ -464,11 +497,15 @@ def _write_final_cell(key: str, value: str, width: int, row_col: str) -> None:
 
     if key == "code":
         code_color = (
-            _col(_GREEN)        if value.startswith("2") else
-            _col(_MAUVE)        if value.startswith("3") else
-            _col(_MAROON)       if value.startswith("4") else
-            _col(BOLD + _RED)   if value.startswith("5") else
-            row_col
+            _col(_GREEN)
+            if value.startswith("2")
+            else _col(_MAUVE)
+            if value.startswith("3")
+            else _col(_MAROON)
+            if value.startswith("4")
+            else _col(BOLD + _RED)
+            if value.startswith("5")
+            else row_col
         )
         write_cell(value, width, color=code_color)
         return
@@ -476,10 +513,13 @@ def _write_final_cell(key: str, value: str, width: int, row_col: str) -> None:
     if key == "bytes":
         padded = value.ljust(width)
         b_color = (
-            _col(BOLD + _RED)   if value.endswith(("GB", "TB")) else
-            _col(BOLD + _PEACH) if value.endswith("MB")         else
-            _col(_YELLOW)       if value.endswith("KB")         else
-            _col(_GREEN)
+            _col(BOLD + _RED)
+            if value.endswith(("GB", "TB"))
+            else _col(BOLD + _PEACH)
+            if value.endswith("MB")
+            else _col(_YELLOW)
+            if value.endswith("KB")
+            else _col(_GREEN)
         )
         sys.stdout.write(b_color + padded + RESET)
         sys.stdout.flush()
@@ -497,6 +537,7 @@ def field_width(key):
 
 # ── single request ────────────────────────────────────────────────────────────
 
+
 def run_once(
     run_num,
     url,
@@ -510,7 +551,7 @@ def run_once(
     resolve=None,
     http_version=None,
 ):
-    rcol = _row_color(run_num)   # base color for this row
+    rcol = _row_color(run_num)  # base color for this row
 
     write_cell(str(run_num), field_width("num"), color=_col(C_LINENUM))
 
@@ -552,9 +593,9 @@ def run_once(
     multi = pycurl.CurlMulti()
     multi.add_handle(curl)
 
-    pointer    = 0
-    prev_time  = 0.0
-    failed     = False
+    pointer = 0
+    prev_time = 0.0
+    failed = False
     fail_errno = None
 
     try:
@@ -578,11 +619,11 @@ def run_once(
 
         num_q, ok_list, err_list = multi.info_read()
         for handle, errno, errmsg in err_list:
-            failed     = True
+            failed = True
             fail_errno = errno
 
     except pycurl.error as exc:
-        failed     = True
+        failed = True
         fail_errno = exc.args[0] if exc.args else None
 
     finally:
@@ -595,10 +636,12 @@ def run_once(
             write_cell(mark, field_width(LIVE_FIELD_KEYS[pointer]), color=_col(C_ERROR))
             pointer += 1
         while pointer < len(LIVE_FIELD_KEYS):
-            write_cell("", field_width(LIVE_FIELD_KEYS[pointer]), color=rcol)
+            write_empty_cell(
+                LIVE_FIELD_KEYS[pointer], field_width(LIVE_FIELD_KEYS[pointer])
+            )
             pointer += 1
         for key in FINAL_FIELD_KEYS:
-            write_cell("", field_width(key), color=rcol)
+            write_empty_cell(key, field_width(key))
         curl.close()
         sys.stdout.write(RESET + "\n")
         sys.stdout.flush()
@@ -608,7 +651,7 @@ def run_once(
         key = LIVE_FIELD_KEYS[pointer]
         printed, prev_time = try_print_live_field(curl, key, prev_time, row_col=rcol)
         if not printed:
-            write_cell("", field_width(key), color=rcol)
+            write_empty_cell(key, field_width(key))
         pointer += 1
 
     for key in FINAL_FIELD_KEYS:
@@ -622,6 +665,7 @@ def run_once(
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
+
 def resolve_data_arg(raw):
     if raw.startswith("@"):
         path = raw[1:]
@@ -631,7 +675,7 @@ def resolve_data_arg(raw):
 
 
 def build_pin_resolve(url, pin_value, ip_version):
-    parsed   = urlsplit(url)
+    parsed = urlsplit(url)
     hostname = parsed.hostname
     if hostname is None:
         sys.stderr.write(f"error: could not parse a hostname out of: {url}\n")
@@ -653,6 +697,7 @@ def build_pin_resolve(url, pin_value, ip_version):
 
 
 # ── main ──────────────────────────────────────────────────────────────────────
+
 
 def main():
     parser = argparse.ArgumentParser(
@@ -689,6 +734,12 @@ FIELDS REPORTED (in column order)
   All times are shown in human-readable units (e.g. 17ms, 1.20s, 1m30s).
   All byte sizes are shown in human-readable units (e.g. 980B, 1.2KB, 4.0MB).
 
+EMPTY CELLS
+  A dim/grey "n/a" means the phase structurally doesn't apply to this
+  request (e.g. TLS HANDSHAKE on a plain http:// URL, or REDIRECT when no
+  redirects were followed). A dim/grey "-" means the field is empty for
+  any other reason (e.g. truncated by a failure mid-transfer).
+
 COLOR SCHEME (Catppuccin Mocha - auto-disabled when output is piped)
   Header row     bold blue
   PROTO h2       teal (HTTP/2 - preferred, modern)
@@ -703,6 +754,7 @@ COLOR SCHEME (Catppuccin Mocha - auto-disabled when output is piped)
   minutes        bold red (very slow)
   REDIRECT       peach (stands out as an unexpected addition to total time)
   Error markers  bold red
+  n/a and -      dim overlay (same shade as the row number column)
   2xx codes      green
   3xx codes      mauve
   4xx codes      maroon
@@ -889,12 +941,28 @@ NOTE ON -p/-P (IP pinning)
 """,
     )
     parser.add_argument("url", help="URL to test")
-    parser.add_argument("-c", "--count",   type=int,   default=1,    help="number of requests to perform (default: 1)")
-    parser.add_argument("-t", "--timeout", type=float, default=10.0, help="total per-request timeout in seconds (default: 10)")
+    parser.add_argument(
+        "-c",
+        "--count",
+        type=int,
+        default=1,
+        help="number of requests to perform (default: 1)",
+    )
+    parser.add_argument(
+        "-t",
+        "--timeout",
+        type=float,
+        default=10.0,
+        help="total per-request timeout in seconds (default: 10)",
+    )
 
     ip_group = parser.add_mutually_exclusive_group()
-    ip_group.add_argument("-4", "--ipv4", action="store_true", help="force IPv4 resolution (default)")
-    ip_group.add_argument("-6", "--ipv6", action="store_true", help="force IPv6 resolution")
+    ip_group.add_argument(
+        "-4", "--ipv4", action="store_true", help="force IPv4 resolution (default)"
+    )
+    ip_group.add_argument(
+        "-6", "--ipv6", action="store_true", help="force IPv6 resolution"
+    )
 
     http_group = parser.add_mutually_exclusive_group()
     http_group.add_argument(
@@ -917,49 +985,90 @@ NOTE ON -p/-P (IP pinning)
     )
 
     parser.add_argument(
-        "-a", "--user-agent", dest="user_agent_alias",
-        choices=sorted(USER_AGENTS.keys()), default=None,
+        "-a",
+        "--user-agent",
+        dest="user_agent_alias",
+        choices=sorted(USER_AGENTS.keys()),
+        default=None,
         help=(
             "send a baked-in User-Agent string instead of the default "
-            f"('{DEFAULT_USER_AGENT}'). choices: " + ", ".join(sorted(USER_AGENTS.keys()))
+            f"('{DEFAULT_USER_AGENT}'). choices: "
+            + ", ".join(sorted(USER_AGENTS.keys()))
         ),
     )
-    parser.add_argument("-H", "--header",  action="append", default=[], dest="headers", metavar="'Key: Value'",
-                        help="custom request header, curl-style (repeatable)")
-    parser.add_argument("-d", "--data",    default=None,
-                        help="request body, sent as POST (prefix with @ to read from a file)")
-    parser.add_argument("-X", "--request", dest="method", default=None,
-                        help="force a specific HTTP method (e.g. PUT, DELETE)")
-    parser.add_argument("-F", "--force-dns", action="store_true",
-                        help="force a fresh DNS lookup on every request")
-    parser.add_argument("-p", "--pin-ip",  default=None, metavar="IP",
-                        help="pin every request to this specific IP")
-    parser.add_argument("-P", "--auto-pin", action="store_true",
-                        help="resolve once and pin all repeats to that IP")
+    parser.add_argument(
+        "-H",
+        "--header",
+        action="append",
+        default=[],
+        dest="headers",
+        metavar="'Key: Value'",
+        help="custom request header, curl-style (repeatable)",
+    )
+    parser.add_argument(
+        "-d",
+        "--data",
+        default=None,
+        help="request body, sent as POST (prefix with @ to read from a file)",
+    )
+    parser.add_argument(
+        "-X",
+        "--request",
+        dest="method",
+        default=None,
+        help="force a specific HTTP method (e.g. PUT, DELETE)",
+    )
+    parser.add_argument(
+        "-F",
+        "--force-dns",
+        action="store_true",
+        help="force a fresh DNS lookup on every request",
+    )
+    parser.add_argument(
+        "-p",
+        "--pin-ip",
+        default=None,
+        metavar="IP",
+        help="pin every request to this specific IP",
+    )
+    parser.add_argument(
+        "-P",
+        "--auto-pin",
+        action="store_true",
+        help="resolve once and pin all repeats to that IP",
+    )
 
     args = parser.parse_args()
 
     ip_version = "6" if args.ipv6 else "4"
     set_ip_column_width(IPV6_IP_WIDTH if ip_version == "6" else IPV4_IP_WIDTH)
 
-    user_agent = USER_AGENTS[args.user_agent_alias] if args.user_agent_alias else DEFAULT_USER_AGENT
-    data       = resolve_data_arg(args.data) if args.data is not None else None
+    user_agent = (
+        USER_AGENTS[args.user_agent_alias]
+        if args.user_agent_alias
+        else DEFAULT_USER_AGENT
+    )
+    data = resolve_data_arg(args.data) if args.data is not None else None
 
     pin_resolve = None
     if args.pin_ip is not None:
-        pin_resolve, pinned_ip, pinned_host = build_pin_resolve(args.url, args.pin_ip, ip_version)
+        pin_resolve, pinned_ip, pinned_host = build_pin_resolve(
+            args.url, args.pin_ip, ip_version
+        )
         print(f"# pinned: {pinned_host} -> {pinned_ip}")
     elif args.auto_pin:
-        pin_resolve, pinned_ip, pinned_host = build_pin_resolve(args.url, "auto", ip_version)
+        pin_resolve, pinned_ip, pinned_host = build_pin_resolve(
+            args.url, "auto", ip_version
+        )
         print(f"# pinned: {pinned_host} -> {pinned_ip}")
 
     http_version = None
-    if getattr(args, 'http2', False):
+    if getattr(args, "http2", False):
         if not _HAS_HTTP2:
             sys.stderr.write(
                 "error: --http2 requested but your libcurl was not built with nghttp2.\n\n"
                 "Diagnose:\n"
-                "  python3 -c \"import pycurl; print(pycurl.version_info())\"\n"
+                '  python3 -c "import pycurl; print(pycurl.version_info())"\n'
                 "  curl --version | grep HTTP2\n\n"
                 "Fix on macOS (Homebrew):\n"
                 "  brew install curl nghttp2\n"
@@ -972,19 +1081,27 @@ NOTE ON -p/-P (IP pinning)
             )
             sys.exit(1)
         http_version = pycurl.CURL_HTTP_VERSION_2TLS
-    elif getattr(args, 'http2_prior_knowledge', False):
+    elif getattr(args, "http2_prior_knowledge", False):
         if not _HAS_HTTP2:
-            sys.stderr.write("error: --http2-prior-knowledge requires libcurl built with nghttp2. See --http2 error for fix.\n")
+            sys.stderr.write(
+                "error: --http2-prior-knowledge requires libcurl built with nghttp2. See --http2 error for fix.\n"
+            )
             sys.exit(1)
         http_version = pycurl.CURL_HTTP_VERSION_2_PRIOR_KNOWLEDGE
 
     print_header()
     for i in range(1, args.count + 1):
         run_once(
-            i, args.url, args.timeout,
-            ip_version=ip_version, user_agent=user_agent,
-            headers=args.headers, data=data, method=args.method,
-            force_dns=args.force_dns, resolve=pin_resolve,
+            i,
+            args.url,
+            args.timeout,
+            ip_version=ip_version,
+            user_agent=user_agent,
+            headers=args.headers,
+            data=data,
+            method=args.method,
+            force_dns=args.force_dns,
+            resolve=pin_resolve,
             http_version=http_version,
         )
 
