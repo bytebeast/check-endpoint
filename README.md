@@ -2,10 +2,10 @@
 
 
 <p align="center">
-  <img alt="Version" src="https://img.shields.io/badge/version-1.0.0-89b4fa?style=flat">
-  <img alt="Status" src="https://img.shields.io/badge/status-beta-f9e2af?style=flat">
-  <img alt="License" src="https://img.shields.io/badge/license-MIT-a6e3a1?style=flat">
-  <img alt="Python" src="https://img.shields.io/badge/python-3.10+-cba6f7?style=flat">
+  <img alt="Version" src="https://img.shields.io/badge/Version-1.0.0-89b4fa?style=flat">
+  <img alt="Status" src="https://img.shields.io/badge/Status-beta-f9e2af?style=flat">
+  <img alt="License" src="https://img.shields.io/badge/License-MIT-a6e3a1?style=flat">
+  <img alt="Python" src="https://img.shields.io/badge/Python-3.10+-cba6f7?style=flat">
   <a href="https://github.com/bytebeast/check-endpoint/actions/workflows/github-code-scanning/codeql">
     <img src="https://github.com/bytebeast/check-endpoint/actions/workflows/github-code-scanning/codeql/badge.svg" alt="CodeQL" />
   </a>
