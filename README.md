@@ -26,6 +26,7 @@ at exactly the phase where it's stuck rather than silently timing out.
 ## Screenshot
 
 ![HTTP request phases](images/check-endpoint-sample-output.png)
+![HTTP request phases - Token example](images/check-enpoint-token-example.png)
 
 ---
 
