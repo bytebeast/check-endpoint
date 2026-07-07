@@ -137,7 +137,7 @@ def _row_color(run_num: int) -> str:
 #
 NA_TEXT = "n/a"
 DASH_TEXT = "-"
-NA_FIELDS = {"tls", "redirect"}
+NA_FIELDS = {"tls", "redirect", "avggap", "maxgap"}
 
 
 def _empty_cell_text(key: str) -> str:
@@ -627,8 +627,6 @@ def run_once(
     multi = pycurl.CurlMulti()
     multi.add_handle(curl)
 
-    request_start = time.perf_counter()
-
     pointer = 0
     prev_time = 0.0
     failed = False
@@ -692,17 +690,21 @@ def run_once(
 
     stream_stats = {}
     if stream_mode:
-        if chunk_times:
-            deltas = [chunk_times[0] - request_start] + [
-                chunk_times[i] - chunk_times[i - 1] for i in range(1, len(chunk_times))
-            ]
-            stream_stats = {
-                "chunks": str(len(chunk_times)),
-                "avggap": human_time(sum(deltas) / len(deltas)),
-                "maxgap": human_time(max(deltas)),
-            }
+        chunk_count = len(chunk_times)
+        stream_stats["chunks"] = str(chunk_count)
+        # AVG GAP / MAX GAP measure the cadence BETWEEN chunks only - the
+        # gap from request start to the first chunk is already the DNS+TCP+
+        # TLS+PRE-TRANSFER+1ST BYTE span shown in the earlier columns, so
+        # including it here would double-count that time as if it were
+        # in-stream stutter. With fewer than 2 chunks there's no inter-chunk
+        # gap to measure at all, so it's a genuine "n/a", not just missing.
+        if chunk_count >= 2:
+            gaps = [chunk_times[i] - chunk_times[i - 1] for i in range(1, chunk_count)]
+            stream_stats["avggap"] = human_time(sum(gaps) / len(gaps))
+            stream_stats["maxgap"] = human_time(max(gaps))
         else:
-            stream_stats = {"chunks": "0", "avggap": "", "maxgap": ""}
+            stream_stats["avggap"] = ""
+            stream_stats["maxgap"] = ""
 
     for key in FINAL_FIELD_KEYS:
         value = stream_stats[key] if key in stream_stats else get_final_value(curl, key)
@@ -783,9 +785,14 @@ FIELDS REPORTED (in column order)
 
   With -S/--stream, three extra columns are appended:
   CHUNKS         number of chunks the response body arrived in
-  AVG GAP        average time between consecutive chunk arrivals
-  MAX GAP        longest gap between any two consecutive chunks
-  These only appear with -S; a normal run's columns are unaffected.
+  AVG GAP        average time BETWEEN consecutive chunks (excludes the
+                 first chunk's arrival - that span is already the DNS +
+                 TCP + TLS + PRE-TRANSFER + 1ST BYTE columns, so counting
+                 it again here would double as fake in-stream stutter)
+  MAX GAP        longest of those inter-chunk gaps
+  These only appear with -S; a normal run's columns are unaffected. With
+  fewer than 2 chunks there's no inter-chunk gap to measure, so both show
+  n/a rather than a number.
 
   All times are shown in human-readable units (e.g. 17ms, 1.20s, 1m30s).
   All byte sizes are shown in human-readable units (e.g. 980B, 1.2KB, 4.0MB).
@@ -999,10 +1006,14 @@ STREAMING RESPONSES (SSE / CHUNKED TRANSFER) - THE -S/--stream FLAG
   of the stream - whether chunks arrive steadily or in bursts with stalls.
 
   -S records a timestamp for every chunk as it arrives (not just the
-  first and last) and adds CHUNKS / AVG GAP / MAX GAP columns. A high
-  MAX GAP relative to AVG GAP means the stream stalled somewhere in the
-  middle even though the overall BODY DL time looked fine - useful for
-  catching intermittent stutter that an aggregate-only view would hide.
+  first and last) and adds CHUNKS / AVG GAP / MAX GAP columns. These
+  measure the gaps BETWEEN chunks only - the first chunk's arrival time
+  is already covered by DNS/TCP/TLS/PRE-TRANSFER/1ST BYTE, so it isn't
+  counted again here. A high MAX GAP relative to AVG GAP means the
+  stream stalled somewhere in the middle even though the overall BODY DL
+  time looked fine - useful for catching intermittent stutter that an
+  aggregate-only view would hide. Fewer than 2 chunks means there's no
+  inter-chunk gap to measure, so both columns show n/a.
 
 NOTE ON -p/-P (IP pinning)
   When pinning, libcurl is told the IP directly and skips real DNS

@@ -47,8 +47,10 @@ at exactly the phase where it's stuck rather than silently timing out.
   backends across a DNS round-robin
 - **Streaming / chunked-transfer testing** - `-S`/`--stream` times every chunk
   as it arrives (not just first/last byte) and reports `CHUNKS`, `AVG GAP`, and
-  `MAX GAP` columns, so you can see whether an SSE or chunked response streams
-  smoothly or stalls mid-transfer
+  `MAX GAP` columns - the gaps measured are strictly _between_ chunks, not
+  including the first chunk's arrival (that span is already covered by the
+  DNS/TCP/TLS/PRE-TRANSFER/1ST BYTE columns) - so you can see whether an SSE or
+  chunked response streams smoothly or stalls mid-transfer
 - **Catppuccin Mocha color theme** - timing magnitude encoded in color (cool
   blues for fast, warm peach/red for slow); auto-disabled when output is piped
 - **curl-compatible flags** - `-H`, `-d`, `-X`, `-4`/`-6`, `-F`, `-a`,
@@ -121,14 +123,22 @@ the time until the first chunk/token arrives, and `BODY DL` is the total
 duration of the whole stream. What's missing without `-S` is the _rhythm_ of the
 stream - whether it arrives steadily or in bursts with stalls.
 
+`AVG GAP` and `MAX GAP` measure the time strictly _between_ chunks - the first
+chunk's arrival is deliberately excluded, since that span is already the DNS +
+TCP + TLS + PRE-TRANSFER + 1ST BYTE columns; counting it again here would
+misreport ordinary connection setup as if it were an in-stream stall. With fewer
+than 2 chunks there's no inter-chunk gap to measure, so both columns correctly
+show `n/a` rather than a misleading number.
+
 - **Token stutter / uneven generation** - a large gap between `AVG GAP` and
   `MAX GAP` means the stream paused somewhere in the middle, even though
   `BODY DL` and `TOTAL TIME` look fine in aggregate. This is exactly the kind of
   thing that makes a chat UI feel like it "hangs then dumps text."
 - **Buffering misconfigurations** - if a reverse proxy is accidentally buffering
   the whole response before forwarding it (a common `nginx proxy_buffering`
-  misconfiguration), `CHUNKS` collapses to 1 or 2 and `1ST BYTE` balloons to
-  roughly equal `TOTAL TIME` - the "stream" isn't actually streaming.
+  misconfiguration), `CHUNKS` collapses to 1 or 2, `AVG GAP`/ `MAX GAP` show
+  `n/a`, and `1ST BYTE` balloons to roughly equal `TOTAL TIME` - the "stream"
+  isn't actually streaming.
 - **Inconsistency across backend replicas** - combine with `IP ADDRESS` to see
   whether one particular backend produces the stutter (uneven load, resource
   pressure) while others stream smoothly.
@@ -264,43 +274,43 @@ chmod +x check-endpoint.py
 
 ## Options
 
-| Flag                              | Description                                                                                                                      |
-| --------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
-| `-c N` / `--count N`              | Number of requests to perform (default: 1)                                                                                       |
-| `-t N` / `--timeout N`            | Per-request timeout in seconds (default: 10)                                                                                     |
-| `-4` / `--ipv4`                   | Force IPv4 resolution (default)                                                                                                  |
-| `-6` / `--ipv6`                   | Force IPv6 resolution                                                                                                            |
-| `-a ALIAS` / `--user-agent ALIAS` | Use a baked-in UA string: `chrome`, `firefox`, `edge`, `safari`, `googlebot`                                                     |
-| `-H 'K: V'` / `--header`          | Custom request header, repeatable                                                                                                |
-| `-d DATA` / `--data`              | Request body (POST); prefix with `@` to read from a file                                                                         |
-| `-X METHOD` / `--request`         | Force an HTTP method (e.g. `PUT`, `DELETE`)                                                                                      |
-| `-F` / `--force-dns`              | Disable libcurl's DNS cache and connection reuse                                                                                 |
-| `-P` / `--auto-pin`               | Resolve once, then pin all repeats to that IP                                                                                    |
-| `-p IP` / `--pin-ip IP`           | Pin all repeats to a specific IP address                                                                                         |
-| `-S` / `--stream`                 | Time every chunk as it arrives and report `CHUNKS`/`AVG GAP`/`MAX GAP` - for testing SSE or chunked-transfer streaming responses |
+| Flag                              | Description                                                                                                                                   |
+| --------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| `-c N` / `--count N`              | Number of requests to perform (default: 1)                                                                                                    |
+| `-t N` / `--timeout N`            | Per-request timeout in seconds (default: 10)                                                                                                  |
+| `-4` / `--ipv4`                   | Force IPv4 resolution (default)                                                                                                               |
+| `-6` / `--ipv6`                   | Force IPv6 resolution                                                                                                                         |
+| `-a ALIAS` / `--user-agent ALIAS` | Use a baked-in UA string: `chrome`, `firefox`, `edge`, `safari`, `googlebot`                                                                  |
+| `-H 'K: V'` / `--header`          | Custom request header, repeatable                                                                                                             |
+| `-d DATA` / `--data`              | Request body (POST); prefix with `@` to read from a file                                                                                      |
+| `-X METHOD` / `--request`         | Force an HTTP method (e.g. `PUT`, `DELETE`)                                                                                                   |
+| `-F` / `--force-dns`              | Disable libcurl's DNS cache and connection reuse                                                                                              |
+| `-P` / `--auto-pin`               | Resolve once, then pin all repeats to that IP                                                                                                 |
+| `-p IP` / `--pin-ip IP`           | Pin all repeats to a specific IP address                                                                                                      |
+| `-S` / `--stream`                 | Time the gaps between chunks as they arrive and report `CHUNKS`/`AVG GAP`/`MAX GAP` - for testing SSE or chunked-transfer streaming responses |
 
 ---
 
 ## Columns
 
-| Column          | Description                                                                                                                           |
-| --------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
-| `#`             | Request number                                                                                                                        |
-| `IP ADDRESS`    | IP address libcurl connected to                                                                                                       |
-| `DNS`           | Duration of DNS lookup (phase only)                                                                                                   |
-| `TCP CONNECT`   | Duration of TCP handshake (phase only)                                                                                                |
-| `TLS HANDSHAKE` | Duration of TLS negotiation; `n/a` for plain `http://`                                                                                |
-| `PRE-TRANSFER`  | Time from connect-ready to request-send-ready; typically ~0ms on direct HTTPS                                                         |
-| `1ST BYTE`      | Time from request sent to first byte of response - the clearest indicator of server-side processing time                              |
-| `REDIRECT`      | Count and total time of any redirects followed; `n/a` when none. This is why `TOTAL TIME` can exceed the sum of other columns.        |
-| `BODY DL`       | Time to receive the complete response body after the first byte                                                                       |
-| `TOTAL TIME`    | End-to-end wall-clock time including all redirects (the only cumulative column)                                                       |
-| `HTTP CODE`     | HTTP response status code                                                                                                             |
-| `TOTAL BYTES`   | Response body size received                                                                                                           |
-| `PROTO`         | HTTP version actually used - `h1` (HTTP/1.1) or `h2` (HTTP/2). Teal for h2, dim for h1.                                               |
-| `CHUNKS`        | _(only with `-S`)_ Number of chunks the response body arrived in                                                                      |
-| `AVG GAP`       | _(only with `-S`)_ Average time between consecutive chunk arrivals                                                                    |
-| `MAX GAP`       | _(only with `-S`)_ Longest gap between any two consecutive chunks - a high `MAX GAP` relative to `AVG GAP` reveals a mid-stream stall |
+| Column          | Description                                                                                                                                                                             |
+| --------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `#`             | Request number                                                                                                                                                                          |
+| `IP ADDRESS`    | IP address libcurl connected to                                                                                                                                                         |
+| `DNS`           | Duration of DNS lookup (phase only)                                                                                                                                                     |
+| `TCP CONNECT`   | Duration of TCP handshake (phase only)                                                                                                                                                  |
+| `TLS HANDSHAKE` | Duration of TLS negotiation; `n/a` for plain `http://`                                                                                                                                  |
+| `PRE-TRANSFER`  | Time from connect-ready to request-send-ready; typically ~0ms on direct HTTPS                                                                                                           |
+| `1ST BYTE`      | Time from request sent to first byte of response - the clearest indicator of server-side processing time                                                                                |
+| `REDIRECT`      | Count and total time of any redirects followed; `n/a` when none. This is why `TOTAL TIME` can exceed the sum of other columns.                                                          |
+| `BODY DL`       | Time to receive the complete response body after the first byte                                                                                                                         |
+| `TOTAL TIME`    | End-to-end wall-clock time including all redirects (the only cumulative column)                                                                                                         |
+| `HTTP CODE`     | HTTP response status code                                                                                                                                                               |
+| `TOTAL BYTES`   | Response body size received                                                                                                                                                             |
+| `PROTO`         | HTTP version actually used - `h1` (HTTP/1.1) or `h2` (HTTP/2). Teal for h2, dim for h1.                                                                                                 |
+| `CHUNKS`        | _(only with `-S`)_ Number of chunks the response body arrived in                                                                                                                        |
+| `AVG GAP`       | _(only with `-S`)_ Average time between consecutive chunks, excluding the first chunk's arrival (already covered by 1ST BYTE and the columns before it); `n/a` with fewer than 2 chunks |
+| `MAX GAP`       | _(only with `-S`)_ Longest of those inter-chunk gaps - a high `MAX GAP` relative to `AVG GAP` reveals a mid-stream stall; `n/a` with fewer than 2 chunks                                |
 
 `CHUNKS`, `AVG GAP`, and `MAX GAP` only appear when `-S`/`--stream` is passed;
 without it, the columns end at `PROTO` and the rest of the table is unaffected.
@@ -321,6 +331,13 @@ without it, the columns end at `PROTO` and the rest of the table is unaffected.
 > **Note on `-S` and request bodies:** `-S` only changes how the _response_ is
 > measured - it has no effect on what you send. Combine it with `-X`/`-d` as
 > usual to test POST/PUT streaming endpoints with a body.
+>
+> **Note on `AVG GAP`/`MAX GAP` excluding the first chunk:** these two columns
+> intentionally start counting from the _second_ chunk onward. Including the
+> first chunk's arrival would double-count the same span already shown by
+> DNS/TCP/TLS/PRE-TRANSFER/1ST BYTE, which would misreport ordinary connection
+> setup time as an in-stream stall. With fewer than 2 chunks there's nothing to
+> measure a gap between, so both columns show `n/a`.
 
 ---
 
