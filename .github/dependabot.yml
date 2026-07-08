@@ -9,6 +9,7 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+    target-branch: develop
 
   # Keeps actions/checkout, actions/setup-python, etc. in your workflows current
   - package-ecosystem: "github-actions"
