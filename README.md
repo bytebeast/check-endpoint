@@ -13,7 +13,7 @@
 > measure each phase of an HTTP connection. I've since vibe-coded it into
 > something considerably more complete and robust.
 
-**A live**, per-phase HTTP timing probe - like `curl -w` on steroids. Each timing
+***A live***, per-phase HTTP timing probe - like `curl -w` on steroids. Each timing
 field prints the moment it becomes available, so a hung request visibly stalls
 at exactly the phase where it's stuck rather than silently timing out.
 
