@@ -120,15 +120,21 @@ Run with `-c 10` or `-c 20` to surface patterns invisible in a single request.
 
 Without `-S`, a streaming response is still measured meaningfully: `1ST BYTE` is
 the time until the first chunk/token arrives, and `BODY DL` is the total
-duration of the whole stream. What's missing without `-S` is the _rhythm_ of the
+duration of the whole stream. What's missing without `-S` is the rhythm of the
 stream - whether it arrives steadily or in bursts with stalls.
 
-`AVG GAP` and `MAX GAP` measure the time strictly _between_ chunks - the first
+`AVG GAP` and `MAX GAP` measure the time strictly between chunks - the first
 chunk's arrival is deliberately excluded, since that span is already the DNS +
 TCP + TLS + PRE-TRANSFER + 1ST BYTE columns; counting it again here would
 misreport ordinary connection setup as if it were an in-stream stall. With fewer
 than 2 chunks there's no inter-chunk gap to measure, so both columns correctly
 show `n/a` rather than a misleading number.
+
+This makes `AVG GAP` functionally the same metric LLM serving benchmarks call
+**Inter-Token Latency (ITL)** - the average time between successive tokens.
+Measuring it over the wire, rather than trusting server-side logs, captures what
+the client actually experiences: network jitter, reverse-proxy buffering, and
+load-balancer hops are all included, not just model-side generation time.
 
 - **Token stutter / uneven generation** - a large gap between `AVG GAP` and
   `MAX GAP` means the stream paused somewhere in the middle, even though
@@ -142,6 +148,12 @@ show `n/a` rather than a misleading number.
 - **Inconsistency across backend replicas** - combine with `IP ADDRESS` to see
   whether one particular backend produces the stutter (uneven load, resource
   pressure) while others stream smoothly.
+- **ITL benchmarking without server-side instrumentation** - if you don't have
+  access to your model server's internal metrics (or you're testing someone
+  else's API), `-c 20 -S` gives you a client-side ITL measurement for free:
+  `AVG GAP` is your typical inter-token latency, `MAX GAP` is your worst-case,
+  and running multiple requests shows whether ITL is consistent or degrades
+  under concurrent load.
 - **Works with auth and POST bodies** - `-S` composes with `-H`/`-d`/`-X`, so
   you can test real chat-completion or SSE endpoints directly:
   `-X POST -d '{"stream": true, ...}' -H "Authorization: Bearer ..." -S`
