@@ -10,14 +10,14 @@ updates:
     schedule:
       interval: "weekly"
 
-  # Test suite dependencies (tests/requirements-test.txt)
-  - package-ecosystem: "pip"
-    directory: "/tests"
-    schedule:
-      interval: "weekly"
-
   # Keeps actions/checkout, actions/setup-python, etc. in your workflows current
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
       interval: "weekly"
+
+  # Test suite dependencies (tests/requirements-test.txt)
+  #- package-ecosystem: "pip"
+  #  directory: "/tests"
+  #  schedule:
+  #    interval: "weekly"
