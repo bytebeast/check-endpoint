@@ -45,7 +45,7 @@ except ImportError:
 APP_VERSION = "1.0.0"
 DEFAULT_USER_AGENT = f"check-endpoint/{APP_VERSION}"
 
-# CURL_VERSION_HTTP2 feature bit — set when libcurl was built with nghttp2.
+# CURL_VERSION_HTTP2 feature bit - set when libcurl was built with nghttp2.
 # If this is False, --http2 will be silently ignored by libcurl (it falls
 # back to HTTP/1.1 without an error). Use this flag to warn the user early.
 _HAS_HTTP2 = bool(pycurl.version_info()[4] & (1 << 16))
@@ -94,7 +94,7 @@ _OVERLAY0 = _fg("#6c7086")  # dim (row numbers, sub-ms times)
 _BLUE = _fg("#89b4fa")  # header labels
 _LAVENDER = _fg("#b4befe")  # IP addresses
 _SKY = _fg("#89dceb")  # fast ms (< 10 ms)
-_TEAL = _fg("#94e2d5")  # moderate ms (10–99 ms)
+_TEAL = _fg("#94e2d5")  # moderate ms (10-99 ms)
 _YELLOW = _fg("#f9e2af")  # slow ms (≥ 100 ms)
 _PEACH = _fg("#fab387")  # seconds / redirect
 _RED = _fg("#f38ba8")  # minutes / errors / 5xx
@@ -172,8 +172,8 @@ def _colorize_time(value: str) -> str:
     if value == "<1ms":
         return _col(_OVERLAY0) + value + RESET
 
-    # Minutes: "1m30s"
-    if "m" in value and value[0].isdigit():
+    # Minutes: "1m30s" (guard against "ms" values, which also contain "m")
+    if "m" in value and value[0].isdigit() and not value.endswith("ms"):
         return _col(BOLD + _RED) + value + RESET
 
     # Seconds: "1.23s"
@@ -332,11 +332,10 @@ def human_bytes(n):
     if n is None:
         return ""
     n = float(n)
-    for unit in ("B", "KB", "MB", "GB"):
-        if n < 1024 or unit == "GB":
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if n < 1024 or unit == "TB":
             return f"{n:.0f}{unit}" if unit == "B" else f"{n:.1f}{unit}"
         n /= 1024
-    return f"{n:.1f}TB"
 
 
 # ── output helpers ────────────────────────────────────────────────────────────
@@ -408,7 +407,7 @@ def _colorize_time_padded(value: str, padded: str) -> str:
     if value == "<1ms":
         return _col(_OVERLAY0) + padded + RESET
 
-    if "m" in value and value[0].isdigit():
+    if "m" in value and value[0].isdigit() and not value.endswith("ms"):
         return _col(BOLD + _RED) + padded + RESET
 
     if value.endswith("s") and not value.endswith("ms"):
@@ -437,16 +436,16 @@ def get_proto_label(curl) -> str:
     """Short label for the HTTP version actually used for the transfer.
 
     CURLINFO_HTTP_VERSION return values (these are NOT the same as the
-    CURL_HTTP_VERSION_* request options — they are a separate enum):
-        0 = unknown / not set
-        1 = HTTP/1.0
-        2 = HTTP/1.1
-        3 = HTTP/2
-        4 = HTTP/3
+    CURL_HTTP_VERSION_* request options - they are a separate enum):
+        0  = unknown / not set
+        1  = HTTP/1.0
+        2  = HTTP/1.1
+        3  = HTTP/2
+        30 = HTTP/3   (31 = HTTP/3-only)
     """
     try:
         v = curl.getinfo(pycurl.INFO_HTTP_VERSION)
-        if v == 4:
+        if v in (30, 31):
             return "h3"
         if v == 3:
             return "h2"
@@ -831,7 +830,7 @@ def main():
         ),
         epilog=f"""\
 FIELDS REPORTED (in column order)
-  PROTO          HTTP version actually used: h1 (HTTP/1.1) or h2 (HTTP/2)
+  #              request counter (1-based) across -c N runs
   IP ADDRESS     resolved IP of the remote host
   DNS            time spent on DNS lookup (that phase only)
   TCP CONNECT    time spent on the TCP handshake (that phase only)
@@ -845,6 +844,8 @@ FIELDS REPORTED (in column order)
   TOTAL TIME     total end-to-end request time including any redirects
   HTTP CODE      response status code
   TOTAL BYTES    size of the response body received
+  PROTO          HTTP version actually used: h1 (HTTP/1.1), h1.0 (HTTP/1.0),
+                 h2 (HTTP/2), or h3 (HTTP/3)
 
   Every column except TOTAL TIME is a per-phase delta.
   DNS + TCP + TLS + PRE-TRANSFER + 1ST BYTE + REDIRECT + BODY DL ≈ TOTAL TIME
@@ -876,8 +877,8 @@ COLOR SCHEME (Catppuccin Mocha - auto-disabled when output is piped)
   Odd rows       primary text color
   Even rows      slightly dimmed text color
   <1ms           dim (sub-millisecond, not worth highlighting)
-  N–9ms          sky blue (fast)
-  10–99ms        teal (moderate)
+  1-9ms          sky blue (fast)
+  10-99ms        teal (moderate)
   ≥100ms         yellow/peach (getting slow)
   seconds        bold peach (slow)
   minutes        bold red (very slow)
