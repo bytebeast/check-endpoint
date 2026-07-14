@@ -269,7 +269,20 @@ def set_ip_column_width(width):
             return
 
 
-LIVE_FIELD_KEYS = ["ip", "dns", "tcp", "tls", "pretransfer", "ttfb"]
+
+# NOTE: "ip" is intentionally NOT in here. curl only reports PRIMARY_IP
+# once a connection is actually established, but the IP column has to be
+# the leftmost thing printed on the row (stdout is append-only left to
+# right - there's no going back to fill it in later). Gating column 1 on
+# "connection succeeded" meant that any stall between DNS-done and
+# connect-done (a hung/black-holed TCP connect, the actual common case)
+# left the pointer stuck at "ip" forever, so the eventual <TO>/<ERR>
+# marker always landed on IP ADDRESS - even when DNS had already
+# resolved fine - and blanked out DNS too since it was never reached.
+# The IP is now resolved independently up front (see run_once) so it
+# prints immediately and doesn't block on curl's connection state at
+# all; this list only covers the phases that genuinely depend on it.
+LIVE_FIELD_KEYS = ["dns", "tcp", "tls", "pretransfer", "ttfb"]
 FINAL_FIELD_KEYS = ["redirect", "download", "total", "code", "bytes", "proto"]
 
 TIMEOUT_MARK = "<TO>"
@@ -362,13 +375,6 @@ RAW_TIME_GETTERS = {
 
 
 def try_print_live_field(curl, key, prev_time, row_col=""):
-    if key == "ip":
-        ip = curl.getinfo(pycurl.PRIMARY_IP)
-        if not ip:
-            return False, prev_time
-        write_cell(ip, field_width(key), color=_col(C_IP) or row_col)
-        return True, prev_time
-
     raw = RAW_TIME_GETTERS[key](curl)
     if raw <= 0:
         return False, prev_time
@@ -573,10 +579,38 @@ def run_once(
     resolve=None,
     http_version=None,
     stream_mode=False,
+    pin_ip=None,
 ):
     rcol = _row_color(run_num)  # base color for this row
 
     write_cell(str(run_num), field_width("num"), color=_col(C_LINENUM))
+
+    # IP ADDRESS is resolved here, independently of curl, and printed
+    # immediately - see the LIVE_FIELD_KEYS comment for why it can't be
+    # sourced from curl's PRIMARY_IP without risking the whole row
+    # blanking out on a slow/hung connect. When pinned (-p/-P) the IP is
+    # already known, so this is just a plain lookup in that case, not a
+    # second DNS round-trip.
+    #
+    # If this lookup fails, that does NOT necessarily mean the request
+    # itself will fail - e.g. behind an HTTP(S) proxy, curl can complete
+    # the request by handing the hostname to the proxy without ever
+    # doing its own forward resolution, so a plain socket.getaddrinfo()
+    # here can fail even though curl succeeds moments later. So a
+    # failure here is non-fatal: print a plain "-" (not an error marker)
+    # and let curl still make its own attempt. If curl's own resolution
+    # also fails, that failure now correctly lands on the DNS column via
+    # the normal LIVE_FIELD_KEYS/pointer mechanism below - not here.
+    if pin_ip:
+        ip_display = pin_ip
+    else:
+        hostname, port = url_host_port(url)
+        ip_display = resolve_ip(hostname, port, ip_version) if hostname else None
+
+    if ip_display is None:
+        write_empty_cell("ip", field_width("ip"))
+    else:
+        write_cell(ip_display, field_width("ip"), color=_col(C_IP) or rcol)
 
     curl = pycurl.Curl()
     curl.setopt(curl.URL, url)
@@ -726,13 +760,45 @@ def resolve_data_arg(raw):
     return raw
 
 
-def build_pin_resolve(url, pin_value, ip_version):
+def url_host_port(url):
+    """
+    Extract (hostname, port) from url, filling in the scheme default
+    port. Returns (None, None) - does NOT exit - if no hostname can be
+    parsed out, since this is also called once per row from run_once():
+    a malformed URL should surface there as the same <BAD-URL> marker
+    curl itself already reports (via CURLE_URL_MALFORMAT), not abort the
+    whole run. Startup-time callers that DO want to fail fast on a bad
+    URL (e.g. build_pin_resolve, before anything has been printed) check
+    for None themselves and exit there.
+    """
     parsed = urlsplit(url)
     hostname = parsed.hostname
     if hostname is None:
+        return None, None
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    return hostname, port
+
+
+def resolve_ip(hostname, port, ip_version):
+    """
+    One-shot forward lookup used to populate the IP ADDRESS column up
+    front, independent of curl's own connection state (see the
+    LIVE_FIELD_KEYS comment for why that separation matters). Returns
+    the first resolved address, or None if resolution fails.
+    """
+    family = socket.AF_INET6 if ip_version == "6" else socket.AF_INET
+    try:
+        infos = socket.getaddrinfo(hostname, port, family, socket.SOCK_STREAM)
+    except socket.gaierror:
+        return None
+    return infos[0][4][0]
+
+
+def build_pin_resolve(url, pin_value, ip_version):
+    hostname, port = url_host_port(url)
+    if hostname is None:
         sys.stderr.write(f"error: could not parse a hostname out of: {url}\n")
         sys.exit(1)
-    port = parsed.port or (443 if parsed.scheme == "https" else 80)
 
     if pin_value == "auto":
         family = socket.AF_INET6 if ip_version == "6" else socket.AF_INET
@@ -1148,6 +1214,7 @@ NOTE ON -p/-P (IP pinning)
     data = resolve_data_arg(args.data) if args.data is not None else None
 
     pin_resolve = None
+    pinned_ip = None
     if args.pin_ip is not None:
         pin_resolve, pinned_ip, pinned_host = build_pin_resolve(
             args.url, args.pin_ip, ip_version
@@ -1201,6 +1268,7 @@ NOTE ON -p/-P (IP pinning)
             resolve=pin_resolve,
             http_version=http_version,
             stream_mode=args.stream,
+            pin_ip=pinned_ip,
         )
 
 
