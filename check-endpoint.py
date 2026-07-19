@@ -233,17 +233,17 @@ def _colorize_code(value: str) -> str:
 
 FIELDS = [
     ["num", "#", 4],
-    ["ip", "IP ADDRESS", 16],
+    ["ip", "IP_ADDRESS", 16],
     ["dns", "DNS", 9],
-    ["tcp", "TCP CONNECT", 13],
-    ["tls", "TLS HANDSHAKE", 15],
+    ["tcp", "TCP_CONNECT", 13],
+    ["tls", "TLS_HANDSHAKE", 15],
     ["pretransfer", "PRE-TRANSFER", 14],
-    ["ttfb", "1ST BYTE", 10],
+    ["ttfb", "1ST_BYTE", 10],
     ["redirect", "REDIRECT", 13],
-    ["download", "BODY DL", 10],
-    ["total", "TOTAL TIME", 12],
-    ["code", "HTTP CODE", 11],
-    ["bytes", "TOTAL BYTES", 13],
+    ["download", "BODY_DL", 10],
+    ["total", "TOTAL_TIME", 12],
+    ["code", "HTTP_CODE", 11],
+    ["bytes", "TOTAL_BYTES", 13],
     ["proto", "PROTO", 7],
 ]
 
@@ -267,7 +267,6 @@ def set_ip_column_width(width):
         if field[0] == "ip":
             field[2] = width
             return
-
 
 
 # NOTE: "ip" is intentionally NOT in here. curl only reports PRIMARY_IP
