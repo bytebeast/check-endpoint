@@ -1,0 +1,4 @@
+# Used when building with this directory as the context.
+# Keep only what the image needs.
+*
+!check-endpoint.py

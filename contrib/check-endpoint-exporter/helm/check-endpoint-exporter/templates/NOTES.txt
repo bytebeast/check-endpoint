@@ -1,0 +1,22 @@
+check-endpoint-exporter is deployed as "{{ include "check-endpoint-exporter.fullname" . }}".
+
+  Probes:   {{ .Values.target.url }}
+  Metrics:  port {{ .Values.exporter.port }}, path {{ .Values.exporter.path }}
+  Each scrape runs {{ .Values.probe.count }} probe(s).
+
+Try it locally:
+  kubectl --namespace {{ .Release.Namespace }} port-forward svc/{{ include "check-endpoint-exporter.fullname" . }} {{ .Values.service.port }}:{{ .Values.service.port }}
+  curl http://localhost:{{ .Values.service.port }}{{ .Values.exporter.path }}
+
+Prometheus scraping:
+{{- if .Values.serviceMonitor.enabled }}
+  A ServiceMonitor was created. Prometheus Operator will discover and scrape it
+  automatically (make sure its serviceMonitorSelector matches this chart's labels).
+{{- else if .Values.service.prometheusAnnotations }}
+  The Service carries prometheus.io/scrape annotations for annotation-based
+  discovery. Ensure your Prometheus kubernetes_sd config honors them.
+{{- else }}
+  No scrape config was created. Either:
+    - install with --set serviceMonitor.enabled=true   (Prometheus Operator), or
+    - install with --set service.prometheusAnnotations=true  (annotation-based).
+{{- end }}

@@ -1,0 +1,21 @@
+apiVersion: v2
+name: check-endpoint-exporter
+description: >-
+  Prometheus exporter that probes an HTTP(S) endpoint's per-phase timing
+  (DNS, TCP, TLS, TTFB, download) on every scrape, backed by check-endpoint.py
+  --prometheus.
+type: application
+version: 0.1.0
+appVersion: "1.0.0"
+keywords:
+  - prometheus
+  - exporter
+  - monitoring
+  - http
+  - latency
+  - blackbox
+  - sre
+sources:
+  - https://github.com/OWNER/REPO
+maintainers:
+  - name: OWNER

@@ -27,7 +27,7 @@ import socket
 import statistics
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit
 
@@ -243,17 +243,17 @@ def _colorize_code(value: str) -> str:
 
 FIELDS = [
     ["num", "#", 4],
-    ["ip", "IP_ADDRESS", 16],
+    ["ip", "IP ADDRESS", 16],
     ["dns", "DNS", 9],
-    ["tcp", "TCP_CONNECT", 13],
-    ["tls", "TLS_HANDSHAKE", 15],
+    ["tcp", "TCP CONNECT", 13],
+    ["tls", "TLS HANDSHAKE", 15],
     ["pretransfer", "PRE-TRANSFER", 14],
-    ["ttfb", "1ST_BYTE", 10],
+    ["ttfb", "1ST BYTE", 10],
     ["redirect", "REDIRECT", 13],
-    ["download", "BODY_DL", 10],
-    ["total", "TOTAL_TIME", 12],
-    ["code", "HTTP_CODE", 11],
-    ["bytes", "TOTAL_BYTES", 13],
+    ["download", "BODY DL", 10],
+    ["total", "TOTAL TIME", 12],
+    ["code", "HTTP CODE", 11],
+    ["bytes", "TOTAL BYTES", 13],
     ["proto", "PROTO", 7],
 ]
 
@@ -266,8 +266,8 @@ IPV6_IP_WIDTH = 42
 # otherwise, so normal runs are unaffected.
 STREAM_FIELDS = [
     ["chunks", "CHUNKS", 8],
-    ["avggap", "AVG_GAP", 10],
-    ["maxgap", "MAX_GAP", 10],
+    ["avggap", "AVG GAP", 10],
+    ["maxgap", "MAX GAP", 10],
 ]
 STREAM_FIELD_KEYS = [f[0] for f in STREAM_FIELDS]
 
@@ -951,10 +951,10 @@ def _cert_expiry_days(datestr):
     if s.upper().endswith(" GMT"):
         s = s[:-4]
     try:
-        dt = datetime.strptime(s, "%b %d %H:%M:%S %Y").replace(tzinfo=timezone.utc)
+        dt = datetime.strptime(s, "%b %d %H:%M:%S %Y").replace(tzinfo=UTC)
     except ValueError:
         return None
-    return (dt - datetime.now(timezone.utc)).days
+    return (dt - datetime.now(UTC)).days
 
 
 def extract_cert_info(curl):
@@ -1055,12 +1055,12 @@ def _percentile(sorted_vals, p):
 
 _SUMMARY_PHASES = [
     ("dns", "DNS"),
-    ("tcp", "TCP_CONNECT"),
-    ("tls", "TLS_HANDSHAKE"),
+    ("tcp", "TCP CONNECT"),
+    ("tls", "TLS HANDSHAKE"),
     ("pretransfer", "PRE-TRANSFER"),
-    ("ttfb", "1ST_BYTE"),
-    ("download", "BODY_DL"),
-    ("total", "TOTAL_TIME"),
+    ("ttfb", "1ST BYTE"),
+    ("download", "BODY DL"),
+    ("total", "TOTAL TIME"),
 ]
 
 
@@ -1105,7 +1105,7 @@ def print_summary(results):
 
     for key, label in _SUMMARY_PHASES:
         stat_row(label, [r["phases"].get(key) for r in ok], human_time, _cell_time)
-    stat_row("TOTAL_BYTES", [r["bytes"] for r in ok], human_bytes, _cell_bytes)
+    stat_row("TOTAL BYTES", [r["bytes"] for r in ok], human_bytes, _cell_bytes)
     sys.stdout.flush()
 
 
@@ -1401,32 +1401,32 @@ def main():
         epilog=f"""\
 FIELDS REPORTED (in column order)
   #              request counter (1-based) across -c N runs
-  IP_ADDRESS     resolved IP of the remote host
+  IP ADDRESS     resolved IP of the remote host
   DNS            time spent on DNS lookup (that phase only)
-  TCP_CONNECT    time spent on the TCP handshake (that phase only)
-  TLS_HANDSHAKE  time spent on the TLS handshake (blank for plain http://)
+  TCP CONNECT    time spent on the TCP handshake (that phase only)
+  TLS HANDSHAKE  time spent on the TLS handshake (blank for plain http://)
   PRE-TRANSFER   time from connect-ready to request-send-ready
-  1ST_BYTE       time from request sent to first byte of the response body
+  1ST BYTE       time from request sent to first byte of the response body
   REDIRECT       redirects followed: count and total time (blank if none).
-                 REDIRECT time is why TOTAL_TIME can exceed the sum of other
+                 REDIRECT time is why TOTAL TIME can exceed the sum of other
                  columns - it accounts for all redirect round-trips.
-  BODY_DL        time to receive the full response body after the first byte
-  TOTAL_TIME     total end-to-end request time including any redirects
-  HTTP_CODE      response status code
-  TOTAL_BYTES    size of the response body received
+  BODY DL        time to receive the full response body after the first byte
+  TOTAL TIME     total end-to-end request time including any redirects
+  HTTP CODE      response status code
+  TOTAL BYTES    size of the response body received
   PROTO          HTTP version actually used: h1 (HTTP/1.1), h1.0 (HTTP/1.0),
                  h2 (HTTP/2), or h3 (HTTP/3)
 
-  Every column except TOTAL_TIME is a per-phase delta.
-  DNS + TCP + TLS + PRE-TRANSFER + 1ST_BYTE + REDIRECT + BODY_DL ≈ TOTAL_TIME
+  Every column except TOTAL TIME is a per-phase delta.
+  DNS + TCP + TLS + PRE-TRANSFER + 1ST BYTE + REDIRECT + BODY DL ≈ TOTAL TIME
 
   With -S/--stream, three extra columns are appended:
   CHUNKS         number of chunks the response body arrived in
-  AVG_GAP        average time BETWEEN consecutive chunks (excludes the
+  AVG GAP        average time BETWEEN consecutive chunks (excludes the
                  first chunk's arrival - that span is already the DNS +
-                 TCP + TLS + PRE-TRANSFER + 1ST_BYTE columns, so counting
+                 TCP + TLS + PRE-TRANSFER + 1ST BYTE columns, so counting
                  it again here would double as fake in-stream stutter)
-  MAX_GAP        longest of those inter-chunk gaps
+  MAX GAP        longest of those inter-chunk gaps
   These only appear with -S; a normal run's columns are unaffected. With
   fewer than 2 chunks there's no inter-chunk gap to measure, so both show
   n/a rather than a number.
