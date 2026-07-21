@@ -1,0 +1,22 @@
+# Local test of the exporter. From this directory:
+#   docker compose up --build
+#   curl localhost:9109/metrics
+services:
+  check-endpoint-exporter:
+    build:
+      # Repository root, so the Dockerfile can COPY check-endpoint.py.
+      context: ../..
+      dockerfile: contrib/check-endpoint-exporter/Dockerfile
+    image: check-endpoint-exporter:latest
+    command:
+      - --prometheus
+      - --prometheus-bind
+      - 0.0.0.0
+      - --prometheus-port
+      - "9109"
+      - -c
+      - "1"
+      - https://example.com   # <-- change to the endpoint you want to probe
+    ports:
+      - "9109:9109"
+    restart: unless-stopped

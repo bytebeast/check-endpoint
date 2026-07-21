@@ -1,0 +1,89 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "check-endpoint-exporter.fullname" . }}
+  labels:
+    {{- include "check-endpoint-exporter.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "check-endpoint-exporter.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "check-endpoint-exporter.labels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: exporter
+          image: {{ include "check-endpoint-exporter.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          args:
+            - --prometheus
+            - --prometheus-bind
+            - 0.0.0.0
+            - --prometheus-port
+            - {{ .Values.exporter.port | quote }}
+            {{- if .Values.probe.count }}
+            - -c
+            - {{ .Values.probe.count | quote }}
+            {{- end }}
+            {{- if .Values.probe.timeout }}
+            - -t
+            - {{ .Values.probe.timeout | quote }}
+            {{- end }}
+            {{- range .Values.probe.extraArgs }}
+            - {{ . | quote }}
+            {{- end }}
+            - {{ required "target.url is required (set --set target.url=...)" .Values.target.url | quote }}
+          ports:
+            - name: metrics
+              containerPort: {{ .Values.exporter.port }}
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: {{ .Values.exporter.path }}
+              port: metrics
+            initialDelaySeconds: 5
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: {{ .Values.exporter.path }}
+              port: metrics
+            initialDelaySeconds: 3
+            periodSeconds: 15
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

@@ -1,0 +1,21 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: check-endpoint-exporter
+  labels:
+    app.kubernetes.io/name: check-endpoint-exporter
+  # Annotation-based scraping. Remove these if you use the ServiceMonitor
+  # instead (servicemonitor.yaml).
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "9109"
+    prometheus.io/path: "/metrics"
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: check-endpoint-exporter
+  ports:
+    - name: metrics
+      port: 9109
+      targetPort: metrics
+      protocol: TCP

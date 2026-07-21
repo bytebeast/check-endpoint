@@ -4,7 +4,7 @@
   <img alt="Version" src="https://img.shields.io/badge/Version-1.0.0-89b4fa?style=flat">
   <img alt="Status" src="https://img.shields.io/badge/Status-beta-f9e2af?style=flat">
   <a href="https://github.com/bytebeast/check-endpoint/blob/main/LICENSE"><img alt="License" src="https://img.shields.io/badge/License-MIT-a6e3a1?style=flat"></a>
-  <a href="https://www.python.org/downloads/"><img alt="Python" src="https://img.shields.io/badge/Python-3.10+-cba6f7?style=flat"></a>
+  <a href="https://www.python.org/downloads/"><img alt="Python" src="https://img.shields.io/badge/Python-3.9+-cba6f7?style=flat"></a>
   <a href="https://github.com/bytebeast/check-endpoint/actions/workflows/github-code-scanning/codeql"><img src="https://github.com/bytebeast/check-endpoint/actions/workflows/github-code-scanning/codeql/badge.svg" alt="CodeQL"></a>
   <a href="https://github.com/bytebeast/check-endpoint/"><img src="https://img.shields.io/github/stars/bytebeast/check-endpoint?style=flat&label=Stars" alt="GitHub Stars"></a>
 </p>
@@ -13,9 +13,20 @@
 > measure each phase of an HTTP connection. I've since vibe-coded it into
 > something considerably more complete and robust.
 
-***A live, per-phase HTTP timing probe***, like `curl -w` on steroids using `pycurl`. Each timing
-field prints the moment it becomes available, so a hung request visibly stalls
-at exactly the phase where it's stuck rather than silently timing out.
+**_A live, per-phase HTTP timing probe_**, like `curl -w` on steroids using
+`pycurl`. Each timing field prints the moment it becomes available, so a hung
+request visibly stalls at exactly the phase where it's stuck rather than
+silently timing out.
+
+**Built for checking internal and external endpoints from the outside in**,
+especially the ones you don't control or can't get shell access to: a
+third-party API, a partner's service, a backend hidden behind a load balancer or
+CDN. When the endpoint owner insists "everything looks fine on our end" but your
+users say otherwise, `check-endpoint` gives you independent, client-side,
+per-phase evidence of exactly where the time goes (or where it breaks), so you
+can point at the real problem instead of guessing. Add `--assert-status` /
+`--max-*` to turn that evidence into a pass/fail check, or `--prometheus` to
+watch it continuously.
 
 <p align="center">
   <img src="images/phases.png" alt="HTTP request phases">
@@ -25,7 +36,8 @@ at exactly the phase where it's stuck rather than silently timing out.
 
 ## Screenshot
 
-![HTTP request phases](images/check-endpoint-sample-output.png)
+![check-endpoint sample output 1](images/check-endpoint-sample-output.png)
+![check-endpoint sample output 2](images/check-endpoint-sample-output-2.png)
 
 ---
 
@@ -60,6 +72,24 @@ at exactly the phase where it's stuck rather than silently timing out.
   (`h1` or `h2`); falls back gracefully to HTTP/1.1
 - **Body and header support** - POST payloads, auth headers, custom content
   types; works against authenticated and stateful endpoints
+- **Percentile summary** - `--stats` reports min / p50 / p90 / p95 / p99 / max /
+  mean / stdev per phase across `-c N` runs, so you see tail latency and jitter,
+  not just a single sample
+- **Built-in assertions (CI / cron ready)** - `--assert-status`, `--max-total`,
+  `--max-ttfb`, `--max-dns`/`--max-tcp`/`--max-tls`/`--max-download` make the
+  probe exit non-zero if any request breaches, so it drops straight into
+  pipelines and alerting
+- **Response body validation** - `--expect-body` and `--expect-regex` fail the
+  run when the body is wrong, not just when the status code is
+- **TLS certificate inspection** - `--tls-info` prints the certificate issuer,
+  expiry with days remaining (colored yellow as it nears expiry, red once
+  expired), and Subject Alternative Names
+- **Response header capture** - `--show-headers` prints selected response
+  headers and a detected cache `HIT`/`MISS` verdict, handy for debugging CDNs
+  and proxies
+- **Prometheus exporter mode** - `--prometheus` runs as a pull-based exporter
+  daemon that re-probes on every scrape; see
+  [contrib/check-endpoint-exporter](contrib/check-endpoint-exporter/README.md)
 
 ---
 
@@ -211,6 +241,24 @@ load-balancer hops are all included, not just model-side generation time.
 
 ---
 
+## Requirements
+
+- **Python 3.9+** - the only hard floor in the code is 3.8 (`statistics.fmean`),
+  but 3.8 is end-of-life, so 3.9 or newer is recommended.
+- **[pycurl](https://pypi.org/project/pycurl/)** - the only Python dependency;
+  everything else the script uses is in the standard library.
+- **System libcurl** - pycurl links against it (`brew install curl` on macOS,
+  `apt install libcurl4-openssl-dev` on Debian/Ubuntu).
+- **libcurl built with nghttp2** - only needed for `--http2`. Check with
+  `curl --version | grep -i HTTP2`; without it, `--http2` simply falls back to
+  HTTP/1.1 (the tool prints how to rebuild if you ask for it).
+
+If you package this (for example a `pyproject.toml`), set
+`requires-python = ">=3.9"` so the badge, these docs, and tooling such as ruff
+all agree on the minimum version.
+
+---
+
 ## Installation
 
 ```bash
@@ -280,26 +328,149 @@ chmod +x check-endpoint.py
 ./check-endpoint.py -X POST -d '{"stream": true, "prompt": "hi"}' \
     -H "Content-Type: application/json" -H "Authorization: Bearer xyz123" \
     -S https://api.example.com/v1/chat
+
+# Percentile summary across 20 runs
+./check-endpoint.py -c 20 --stats https://example.com
+
+# CI health check: exit non-zero if not 200, or slower than the thresholds
+./check-endpoint.py --assert-status 200 --max-ttfb 300ms --max-total 1s https://example.com/health
+
+# Validate the response body contains a substring, and inspect the TLS certificate
+./check-endpoint.py --expect-body '"status":"ok"' --tls-info https://example.com/health
+
+# Validate the body against a regex (Python re syntax, searched anywhere in the body)
+./check-endpoint.py --expect-regex '"status"\s*:\s*"(ok|healthy)"' https://example.com/health
+
+# Case-insensitive match using an inline flag at the start of the pattern
+./check-endpoint.py --expect-regex '(?i)service is up' https://example.com/status
+
+# Anchor to the whole body (^ and $ are body start/end unless you add (?m))
+./check-endpoint.py --expect-regex '^\s*OK\s*$' https://example.com/ping
+
+# Show selected response headers and the cache HIT/MISS verdict
+./check-endpoint.py --show-headers https://example.com
+
+# Run as a Prometheus exporter that re-probes on every scrape
+./check-endpoint.py --prometheus --prometheus-port 9109 https://example.com
 ```
 
 ---
 
 ## Options
 
-| Flag                              | Description                                                                                                                                   |
-| --------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
-| `-c N` / `--count N`              | Number of requests to perform (default: 1)                                                                                                    |
-| `-t N` / `--timeout N`            | Per-request timeout in seconds (default: 10)                                                                                                  |
-| `-4` / `--ipv4`                   | Force IPv4 resolution (default)                                                                                                               |
-| `-6` / `--ipv6`                   | Force IPv6 resolution                                                                                                                         |
-| `-a ALIAS` / `--user-agent ALIAS` | Use a baked-in UA string: `chrome`, `firefox`, `edge`, `safari`, `googlebot`                                                                  |
-| `-H 'K: V'` / `--header`          | Custom request header, repeatable                                                                                                             |
-| `-d DATA` / `--data`              | Request body (POST); prefix with `@` to read from a file                                                                                      |
-| `-X METHOD` / `--request`         | Force an HTTP method (e.g. `PUT`, `DELETE`)                                                                                                   |
-| `-F` / `--force-dns`              | Disable libcurl's DNS cache and connection reuse                                                                                              |
-| `-P` / `--auto-pin`               | Resolve once, then pin all repeats to that IP                                                                                                 |
-| `-p IP` / `--pin-ip IP`           | Pin all repeats to a specific IP address                                                                                                      |
-| `-S` / `--stream`                 | Time the gaps between chunks as they arrive and report `CHUNKS`/`AVG GAP`/`MAX GAP` - for testing SSE or chunked-transfer streaming responses |
+| Flag                                            | Description                                                                                                                                   |
+| ----------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| `-c N` / `--count N`                            | Number of requests to perform (default: 1)                                                                                                    |
+| `-t N` / `--timeout N`                          | Per-request timeout in seconds (default: 10)                                                                                                  |
+| `-4` / `--ipv4`                                 | Force IPv4 resolution (default)                                                                                                               |
+| `-6` / `--ipv6`                                 | Force IPv6 resolution                                                                                                                         |
+| `-a ALIAS` / `--user-agent ALIAS`               | Use a baked-in UA string: `chrome`, `firefox`, `edge`, `safari`, `googlebot`                                                                  |
+| `-H 'K: V'` / `--header`                        | Custom request header, repeatable                                                                                                             |
+| `-d DATA` / `--data`                            | Request body (POST); prefix with `@` to read from a file                                                                                      |
+| `-X METHOD` / `--request`                       | Force an HTTP method (e.g. `PUT`, `DELETE`)                                                                                                   |
+| `-F` / `--force-dns`                            | Disable libcurl's DNS cache and connection reuse                                                                                              |
+| `-P` / `--auto-pin`                             | Resolve once, then pin all repeats to that IP                                                                                                 |
+| `-p IP` / `--pin-ip IP`                         | Pin all repeats to a specific IP address                                                                                                      |
+| `-S` / `--stream`                               | Time the gaps between chunks as they arrive and report `CHUNKS`/`AVG GAP`/`MAX GAP` - for testing SSE or chunked-transfer streaming responses |
+| `--http2`                                       | Request HTTP/2 via ALPN (HTTPS); falls back to HTTP/1.1 if unsupported                                                                        |
+| `--http2-prior-knowledge`                       | Send HTTP/2 over cleartext `http://` (h2c); only when the server is known to speak it                                                         |
+| `--stats`                                       | Print a percentile summary (min/p50/p90/p95/p99/max/mean/stdev) per phase; needs `-c 2` or more                                               |
+| `--assert-status CODE`                          | Fail (exit 1) if the HTTP status is not `CODE`                                                                                                |
+| `--max-total DUR`                               | Fail if `TOTAL TIME` exceeds `DUR` (`500ms`, `1s`, `1.5s`)                                                                                    |
+| `--max-ttfb DUR`                                | Fail if `1ST BYTE` (time to first byte) exceeds `DUR`                                                                                         |
+| `--max-dns` / `-tcp` / `-tls` / `-download DUR` | Fail if that individual phase exceeds `DUR`                                                                                                   |
+| `--expect-body STR`                             | Fail if the response body does not contain `STR`                                                                                              |
+| `--expect-regex RE`                             | Fail if the response body does not match regex `RE`                                                                                           |
+| `--tls-info`                                    | After the run, print TLS certificate details (issuer, expiry with days left, SANs)                                                            |
+| `--show-headers`                                | After the run, print selected response headers and the cache `HIT`/`MISS` verdict                                                             |
+| `--prometheus`                                  | Run as a Prometheus exporter daemon; re-probes on every scrape (see [contrib](contrib/check-endpoint-exporter/README.md))                     |
+| `--prometheus-port PORT`                        | Port for the `--prometheus` exporter (default: 9109)                                                                                          |
+| `--prometheus-bind ADDR`                        | Bind address for the `--prometheus` exporter (default: all interfaces)                                                                        |
+
+---
+
+## Checks, Analysis & Export
+
+### Percentile summary (`--stats`)
+
+With `-c N`, add `--stats` to print a footer with min / p50 / p90 / p95 / p99 /
+max / mean / stdev for every phase (plus total bytes). It appears only with 2 or
+more successful requests, since percentiles are meaningless below that; p95 and
+p99 get useful once you have roughly 20+ runs.
+
+### Assertions and exit codes (CI, cron, alerting)
+
+Set any assertion and `check-endpoint` becomes a pass/fail check: if any single
+request breaches, the process exits non-zero, so it slots straight into CI
+pipelines and cron-driven monitoring.
+
+- `--assert-status CODE` requires an exact HTTP status
+- `--max-total`, `--max-ttfb`, `--max-dns`, `--max-tcp`, `--max-tls`,
+  `--max-download` set per-phase time ceilings (`DUR` is `500ms`, `1s`, `1.5s`,
+  and so on)
+- `--expect-body STR` matches a literal substring; `--expect-regex RE` matches a
+  regular expression (both validate the response body)
+
+Exit codes: `0` all good, `1` an assertion breached, `2` bad arguments.
+
+```bash
+./check-endpoint.py --assert-status 200 --max-ttfb 300ms --max-total 1s \
+    --expect-body '"status":"ok"' https://example.com/health
+echo $?   # 0 = healthy, 1 = something breached
+```
+
+**Regex flavor (`--expect-regex`):** patterns use Python's
+[`re`](https://docs.python.org/3/library/re.html) syntax and are evaluated with
+`re.search`, so the pattern matches anywhere in the body (it is not anchored).
+By default it is case-sensitive and `.` does not cross newlines. Change that
+with an inline flag placed at the **start** of the pattern: `(?i)`
+case-insensitive, `(?s)` dotall (`.` also matches newlines), `(?m)` multiline
+(`^` and `$` match at each line rather than only the whole-body start/end). The
+body is read as UTF-8 (invalid bytes replaced) up to a 5 MiB cap, and an invalid
+pattern exits with code `2` before any request is sent. `--expect-body`, by
+contrast, is a plain substring check with no regex interpretation.
+
+### TLS certificate inspection (`--tls-info`)
+
+Prints the server certificate's subject, issuer, expiry date with days remaining
+(yellow under 30 days, orange under 15, red once expired), and its Subject
+Alternative Names. Useful for catching a certificate that is about to lapse
+before your users do.
+
+### Response headers (`--show-headers`)
+
+Prints a curated set of response headers (server, content type, caching headers,
+and so on) from the final response, plus a detected cache `HIT`/`MISS` verdict.
+Handy when you suspect a CDN or proxy is the difference between "works on their
+end" and "broken from here."
+
+### Prometheus exporter (`--prometheus`)
+
+`--prometheus` turns the tool into a small pull-based Prometheus exporter
+instead of printing the table. It serves metrics over HTTP and **re-probes the
+target on every scrape**, so Prometheus always pulls fresh per-phase timing,
+HTTP status, response size, and TLS certificate expiry. It runs in the
+foreground until `Ctrl+C`. Use `--prometheus-port` (default 9109) and
+`--prometheus-bind` (default all interfaces) to control the listener.
+
+```bash
+# serve metrics on :9109, probing example.com on each scrape
+./check-endpoint.py --prometheus --prometheus-port 9109 https://example.com
+# then, from anywhere that can reach it:
+curl localhost:9109/metrics
+```
+
+Each scrape runs `-c` probes (default 1), so `-c > 1` also exposes per-scrape
+total-time percentiles. Exposed series include `check_endpoint_up`, the
+per-phase `*_seconds` gauges, `check_endpoint_http_response_code`,
+`check_endpoint_response_bytes`, and (over HTTPS)
+`check_endpoint_tls_expiry_days`.
+
+**Deploying it:** a ready-to-use Docker image, Helm chart, and raw Kubernetes
+manifests live in
+**[contrib/check-endpoint-exporter](contrib/check-endpoint-exporter/README.md)**,
+together with instructions for wiring it into Prometheus (via a ServiceMonitor
+or scrape annotations) and example alert rules.
 
 ---
 

@@ -1,0 +1,69 @@
+# -- The endpoint to probe on every scrape. REQUIRED.
+target:
+  url: "https://example.com"
+# -- Probe behaviour (maps to check-endpoint.py flags).
+probe:
+  # requests per scrape; >1 also exposes per-scrape total-time percentiles
+  count: 1
+  # per-request timeout in seconds (-t)
+  timeout: 10
+  # any extra check-endpoint flags, e.g.:
+  #   ["--http2"]
+  #   ["-H", "Authorization: Bearer TOKEN"]
+  #   ["-6"]                      # force IPv6
+  extraArgs: []
+image:
+  repository: ghcr.io/OWNER/check-endpoint-exporter
+  # defaults to the chart appVersion when empty
+  tag: ""
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+replicaCount: 1
+# The port/path the exporter listens on. The server answers on ANY path, but
+# /metrics is used by convention for ServiceMonitor and annotations.
+exporter:
+  port: 9109
+  path: /metrics
+service:
+  type: ClusterIP
+  port: 9109
+  annotations: {}
+  # Add classic prometheus.io/scrape annotations for annotation-based
+  # discovery. Leave false if you use the ServiceMonitor below.
+  prometheusAnnotations: false
+# Prometheus Operator ServiceMonitor (requires the CRD to be installed).
+serviceMonitor:
+  enabled: false
+  # namespace: monitoring        # defaults to the release namespace
+  interval: 30s
+  scrapeTimeout: 10s
+  labels: {}
+  relabelings: []
+  metricRelabelings: []
+resources:
+  requests:
+    cpu: 25m
+    memory: 32Mi
+  limits:
+    cpu: 100m
+    memory: 64Mi
+podAnnotations: {}
+podLabels: {}
+# The image already runs as uid 10001; these harden it further. The probe
+# writes nothing to disk, so the root filesystem is mounted read-only (a
+# writable emptyDir is mounted at /tmp just in case).
+podSecurityContext:
+  runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+nodeSelector: {}
+tolerations: []
+affinity: {}
