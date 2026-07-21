@@ -36,6 +36,12 @@ watch it continuously.
 
 ## Screenshots
 
+This is how it would be done using only curl.
+![curl-timings](images/curl-timings.png)
+
+My script provides the same functionality as curl, but because it's built with
+pycurl, I have much finer programmatic control over the output and can customize
+it in ways that aren't as convenient with the curl command-line interface.
 ![check-endpoint sample output 1](images/check-endpoint-sample-output.png)
 ![check-endpoint sample output 2](images/check-endpoint-sample-output-2.png)
 
