@@ -34,7 +34,7 @@ watch it continuously.
 
 ---
 
-## Screenshot
+## Screenshots
 
 ![check-endpoint sample output 1](images/check-endpoint-sample-output.png)
 ![check-endpoint sample output 2](images/check-endpoint-sample-output-2.png)
