@@ -52,7 +52,7 @@ except ImportError:
     sys.exit(1)
 
 
-APP_VERSION = "1.0.0"
+APP_VERSION = "2.0.0"
 DEFAULT_USER_AGENT = f"check-endpoint/{APP_VERSION}"
 
 # CURL_VERSION_HTTP2 feature bit - set when libcurl was built with nghttp2.
