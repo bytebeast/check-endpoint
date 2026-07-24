@@ -27,7 +27,8 @@ import socket
 import statistics
 import sys
 import time
-from datetime import datetime, timezone
+from collections import Counter
+from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit
 
@@ -951,10 +952,10 @@ def _cert_expiry_days(datestr):
     if s.upper().endswith(" GMT"):
         s = s[:-4]
     try:
-        dt = datetime.strptime(s, "%b %d %H:%M:%S %Y").replace(tzinfo=timezone.utc)
+        dt = datetime.strptime(s, "%b %d %H:%M:%S %Y").replace(tzinfo=UTC)
     except ValueError:
         return None
-    return (dt - datetime.now(timezone.utc)).days
+    return (dt - datetime.now(UTC)).days
 
 
 def extract_cert_info(curl):
@@ -1156,6 +1157,62 @@ def print_tls_info(cert):
     sys.stdout.flush()
 
 
+# Headers that hint at WHICH server / edge / CDN / backend produced the
+# response. Grouped loosely by source. Many are per-request identifiers
+# (cf-ray, x-amz-cf-id, *-request-id): those change every request even from a
+# single backend, so the summary treats "all unique" differently from "varied
+# between a few distinct values" (which is the real which-backend signal).
+SERVER_HINT_HEADERS = [
+    # Generic origin / framework identity
+    "server",
+    "x-powered-by",
+    "x-aspnet-version",
+    "x-aspnetmvc-version",
+    # Proxy / cache chain
+    "via",
+    "x-served-by",
+    "x-cache",
+    "x-cache-hits",
+    "x-cache-status",
+    "age",
+    # Which specific backend / node / pod answered
+    "x-backend",
+    "x-backend-server",
+    "x-server",
+    "x-server-name",
+    "x-host",
+    "x-node",
+    "x-instance",
+    "x-instance-id",
+    "x-upstream",
+    "x-envoy-upstream-service-time",
+    # Per-request / trace IDs (usually unique per request)
+    "x-request-id",
+    "x-amzn-requestid",
+    "x-amzn-trace-id",
+    "x-vcap-request-id",
+    "x-github-request-id",
+    # Cloudflare
+    "cf-ray",
+    "cf-cache-status",
+    "cf-worker",
+    # AWS CloudFront
+    "x-amz-cf-id",
+    "x-amz-cf-pop",
+    # Fastly / Akamai / other CDNs (x-served-by already listed above)
+    "x-timer",
+    "x-fastly-request-id",
+    "akamai-grn",
+    "x-akamai-transformed",
+    # PaaS providers
+    "fly-request-id",
+    "x-render-origin-server",
+    "x-vercel-id",
+    "x-vercel-cache",
+    "x-nf-request-id",  # Netlify
+]
+
+
 _CURATED_HEADERS = [
     "server",
     "content-type",
@@ -1219,6 +1276,184 @@ def print_headers_block(results):
     if not shown:
         sys.stdout.write(
             _col(C_LINENUM) + "  (none of the common headers were present)" + end + "\n"
+        )
+    sys.stdout.flush()
+
+
+# ── request provenance (who served each request) ──────────────────────────────
+#
+# Unlike print_headers_block (which shows only the FINAL response's curated
+# headers), this walks EVERY request and reports the server-identifying headers
+# per run, so across -c N you can see which edge/backend answered each one.
+# It shows:
+#   * one row per successful request: run #, IP, and each header as key=value
+#   * a rollup per header classifying it as:
+#       constant   - same value on every run (e.g. server=cloudflare)
+#       varied     - a few distinct values (the real "different backend" signal,
+#                    e.g. x-cache = HIT×6 / MISS×4)
+#       per-request- a different value every run (trace/request IDs like cf-ray)
+
+
+def _provenance_keys(results, want_hints, user_keys):
+    """Ordered list of header names to display: the server-hint headers that
+    actually showed up (only if --server-hints), followed by any user-requested
+    --capture-header names (always kept, even if absent, so their absence is
+    visible)."""
+    present = set()
+    for r in results:
+        h = r.get("headers")
+        if h:
+            present.update(h.keys())
+    keys = []
+    if want_hints:
+        for k in SERVER_HINT_HEADERS:
+            if k in present and k not in keys:
+                keys.append(k)
+    for k in user_keys:
+        if k not in keys:
+            keys.append(k)
+    return keys
+
+
+# CDN / cache headers whose value is a comma-separated CHAIN of hops, oldest
+# (origin-shield) first, newest (the edge that actually served you) last. BY
+# DEFAULT we report only that final hop, which is the one you care about;
+# pass --full-cdn to show the entire raw chain instead.
+CDN_CHAINED_HEADERS = {
+    "x-served-by",
+    "x-cache",
+    "x-cache-hits",
+    "x-cache-status",
+    "via",
+}
+
+
+def _final_hop(value):
+    """Last segment of a comma-separated hop chain, trimmed."""
+    return value.split(",")[-1].strip()
+
+
+def _hop_count(value):
+    return len([p for p in value.split(",")]) if value else 0
+
+
+def _kv(key, value, missing=False):
+    """Render one key=value token with Catppuccin coloring."""
+    if missing or value is None:
+        return _col(C_LINENUM) + f"{key}=-" + (RESET if USE_COLOR else "")
+    end = RESET if USE_COLOR else ""
+    return _col(_LAVENDER) + key + "=" + end + _col(_SUBTEXT0) + value + end
+
+
+def print_provenance_summary(results, want_hints, user_keys, full_cdn=False):
+    end = RESET if USE_COLOR else ""
+    user_keys = [k.strip().lower() for k in user_keys]
+    title = "REQUEST PROVENANCE (server-identifying headers, per request)"
+    if full_cdn:
+        title += "  [--full-cdn: full hop chain]"
+    sys.stdout.write("\n" + _col(C_HEADER) + title + end + "\n")
+
+    keys = _provenance_keys(results, want_hints, user_keys)
+    ok = [r for r in results if not r["failed"] and r.get("headers")]
+
+    if not keys:
+        sys.stdout.write(
+            _col(C_LINENUM)
+            + "  (no server-identifying headers found in any response)"
+            + end
+            + "\n"
+        )
+        sys.stdout.flush()
+        return
+    if not ok:
+        sys.stdout.write(
+            _col(C_LINENUM)
+            + "  (no headers captured - did every request fail?)"
+            + end
+            + "\n"
+        )
+        sys.stdout.flush()
+        return
+
+    # By DEFAULT chained CDN headers are collapsed to their final hop; only
+    # --full-cdn shows the whole comma-separated chain.
+    def _collapse(k, v):
+        return (
+            not full_cdn
+            and k in CDN_CHAINED_HEADERS
+            and v is not None
+            and "," in v
+        )
+
+    ip_w = field_width("ip")
+    # Per-request rows.
+    for r in ok:
+        h = r["headers"]
+        toks = []
+        for k in keys:
+            v = h.get(k)
+            if _collapse(k, v):
+                toks.append(_kv(f"{k}(final)", _final_hop(v)))
+            else:
+                toks.append(_kv(k, v))
+        runlbl = _col(C_LINENUM) + f"  {r['run']:<3}" + end
+        iplbl = _col(C_IP) + f"{(r.get('ip') or '-'):<{ip_w}}" + end
+        sys.stdout.write(f"{runlbl} {iplbl}  {'  '.join(toks)}\n")
+
+    # Rollup: classify each header as constant / varied / per-request.
+    sys.stdout.write("\n")
+    n = len(ok)
+    any_collapsed = False
+    for k in keys:
+        raw_vals = [r["headers"].get(k) for r in ok]
+        # By default collapse chained headers to their final hop and note the
+        # chain depth; with --full-cdn use the raw values verbatim.
+        max_hops = max((_hop_count(v) for v in raw_vals if v), default=0)
+        collapse = (not full_cdn) and k in CDN_CHAINED_HEADERS and max_hops > 1
+        if collapse:
+            any_collapsed = True
+            vals = [(_final_hop(v) if v else "-") for v in raw_vals]
+            label_key = f"{k}(final)"
+            suffix = _col(_OVERLAY0) + f"   [{max_hops} hops in chain]" + end
+        else:
+            vals = [(v or "-") for v in raw_vals]
+            label_key = k
+            suffix = ""
+
+        counts = Counter(vals)
+        distinct = len(counts)
+        if distinct == 1:
+            only = next(iter(counts))
+            label = _col(_OVERLAY0) + f"  constant     {label_key}: " + end
+            body = _col(_SUBTEXT0) + only + end
+        elif distinct == n and n > 1:
+            label = _col(_MAUVE) + f"  per-request  {label_key}: " + end
+            body = (
+                _col(_TEXT)
+                + f"{distinct} distinct (unique each run - looks like a request/trace id)"
+                + end
+            )
+        else:
+            label = _col(BOLD + _PEACH) + f"  varied       {label_key}: " + end
+            top = ", ".join(f"{val}×{cnt}" for val, cnt in counts.most_common(6))
+            more = "" if distinct <= 6 else f", +{distinct - 6} more"
+            body = (
+                _col(_TEXT)
+                + f"{distinct} distinct "
+                + end
+                + _col(_SUBTEXT0)
+                + f"({top}{more})"
+                + end
+            )
+        sys.stdout.write(label + body + suffix + "\n")
+
+    # Let the user know the chain was trimmed and how to see all of it.
+    if any_collapsed:
+        sys.stdout.write(
+            _col(C_LINENUM)
+            + "  (CDN hop chains shown as final hop; pass --full-cdn for the full chain)"
+            + end
+            + "\n"
         )
     sys.stdout.flush()
 
@@ -1627,6 +1862,39 @@ ANALYSIS, CHECKS, AND EXPORT
     caching headers, and so on) from the final response, plus a detected
     cache HIT/MISS verdict.
 
+  --server-hints
+    After the run, print a PER-REQUEST summary of the headers that hint at
+    which server / edge / CDN / backend produced each response (server, via,
+    x-served-by, x-cache, cf-ray, cf-cache-status, x-amz-cf-pop, x-backend,
+    x-envoy-upstream-service-time, fly-request-id, x-vercel-id, and more).
+    Each successful run gets a row (# + IP + key=value headers), followed by a
+    rollup that classifies every header as:
+      constant     same value every run   (e.g. server=cloudflare)
+      varied       a few distinct values  (the real which-backend signal,
+                   e.g. x-cache = HIT×6 / MISS×4, or two x-amz-cf-pop codes)
+      per-request  a different value each run (request/trace ids like cf-ray)
+    Combine with -c N (and optionally -F to avoid connection reuse) to reveal
+    load-balancer rotation and CDN PoP selection.
+
+  --capture-header NAME   (repeatable)
+    Also track one or more specific response headers by name and show their
+    value per request in the same end-of-run summary. Missing values render as
+    "-", so you can confirm whether an expected header is present at all and
+    whether it changes between backends. Works with or without --server-hints.
+
+  --full-cdn
+    Some CDN/cache headers are a comma-separated CHAIN of hops (Fastly/Varnish
+    x-served-by, x-cache, x-cache-hits, via), oldest shield first and the edge
+    that actually served you last. BY DEFAULT the provenance summary collapses
+    those to just the final hop and appends "[N hops in chain]", so
+      x-served-by = cache-iad-...-IAD, cache-iad-...-IAD, cache-pao-kpao1770024-PAO
+    reads as
+      x-served-by(final) = cache-pao-kpao1770024-PAO   [4 hops in chain]
+    and x-cache "MISS, HIT, HIT" collapses to the edge verdict "HIT". Pass
+    --full-cdn to show the entire raw chain instead. Only the known chained
+    headers are collapsed by default; every other header is shown verbatim
+    either way.
+
   --prometheus  (with --prometheus-port, --prometheus-bind)
     Run as a Prometheus exporter daemon instead of printing the table:
     serve metrics over HTTP (default port 9109, all interfaces) and re-probe
@@ -1689,6 +1957,19 @@ EXAMPLES
 
   Show response headers and cache status:
       ./check-endpoint.py --show-headers https://example.com
+
+  See which backend/edge served each of 10 requests (CDN chains collapse to
+  the final serving edge/PoP by default):
+      ./check-endpoint.py -c 10 --server-hints https://example.com
+
+  Same, but show the FULL multi-hop CDN chain instead of just the final hop:
+      ./check-endpoint.py -c 10 --server-hints --full-cdn https://example.com
+
+  Track a specific header per request (repeatable), e.g. a backend id:
+      ./check-endpoint.py -c 10 --capture-header x-backend --capture-header x-pod https://example.com
+
+  Force fresh connections so every run can land on a different backend:
+      ./check-endpoint.py -c 10 -F --server-hints https://example.com
 
   Run a Prometheus exporter that re-probes on every scrape:
       ./check-endpoint.py --prometheus --prometheus-port 9109 https://example.com
@@ -1848,6 +2129,35 @@ NOTE ON -p/-P (IP pinning)
         action="store_true",
         help="after the run, print selected response headers and detected "
         "cache HIT/MISS",
+    )
+    out_group.add_argument(
+        "--server-hints",
+        dest="server_hints",
+        action="store_true",
+        help="after the run, print a per-request summary of server/edge/CDN "
+        "identifying headers (server, via, x-served-by, cf-ray, x-cache, "
+        "x-backend, x-amz-cf-pop, ...), flagging which values are constant, "
+        "which vary across -c N runs (the real 'which backend served it' "
+        "signal), and which are unique per request",
+    )
+    out_group.add_argument(
+        "--capture-header",
+        dest="capture_header_names",
+        action="append",
+        default=[],
+        metavar="NAME",
+        help="capture a specific response header by name and show its value "
+        "per request in the end-of-run provenance summary (repeatable)",
+    )
+    out_group.add_argument(
+        "--full-cdn",
+        dest="full_cdn",
+        action="store_true",
+        help="in the provenance summary, show the FULL comma-chained CDN/cache "
+        "headers (x-served-by, x-cache, x-cache-hits, via). By default these "
+        "are collapsed to just their final hop - the edge/PoP that actually "
+        "served the request - with the chain depth noted; pass this flag to "
+        "see every hop in the chain",
     )
     out_group.add_argument(
         "--prometheus",
@@ -2047,7 +2357,11 @@ NOTE ON -p/-P (IP pinning)
     )
 
     capture_body = args.expect_body is not None or expect_regex is not None
-    capture_headers = args.show_headers
+    # Headers must be captured for --show-headers, --server-hints, or any
+    # --capture-header NAME. Any one of them turns on the per-response capture.
+    capture_headers = (
+        args.show_headers or args.server_hints or bool(args.capture_header_names)
+    )
     capture_cert = args.tls_info
 
     def run_probe_cycle(quiet, want_cert):
@@ -2098,6 +2412,10 @@ NOTE ON -p/-P (IP pinning)
         print_tls_info(cert)
     if args.show_headers:
         print_headers_block(results)
+    if args.server_hints or args.capture_header_names:
+        print_provenance_summary(
+            results, args.server_hints, args.capture_header_names, args.full_cdn
+        )
     if assert_cfg is not None:
         end = RESET if USE_COLOR else ""
         failed_runs = [r for r in results if r["_assert_fails"]]

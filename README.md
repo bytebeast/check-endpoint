@@ -93,6 +93,19 @@ it in ways that aren't as convenient with the curl command-line interface.
 - **Response header capture** - `--show-headers` prints selected response
   headers and a detected cache `HIT`/`MISS` verdict, handy for debugging CDNs
   and proxies
+- **Per-request provenance** - `--server-hints` prints, for every request, the
+  headers that reveal which server, edge, CDN, or backend answered (`server`,
+  `via`, `x-served-by`, `x-cache`, `cf-ray`, `x-amz-cf-pop`, `x-backend`, and
+  more), then classifies each header as constant, varied, or per-request so you
+  can see at a glance which backend served each of your `-c N` requests
+- **Custom header capture** - `--capture-header NAME` (repeatable) tracks any
+  specific response header you name and shows its value per request in the same
+  summary; missing values render as `-`
+- **CDN hop flattening** - by default, comma-chained CDN/cache headers
+  (`x-served-by`, `x-cache`, `x-cache-hits`, `via`) are collapsed to just the
+  final hop (the edge that actually served you) with the chain depth noted,
+  making multi-hop Fastly/Varnish output readable; pass `--full-cdn` to see
+  every hop in the chain
 - **Prometheus exporter mode** - `--prometheus` runs as a pull-based exporter
   daemon that re-probes on every scrape; see
   [contrib/check-endpoint-exporter](contrib/check-endpoint-exporter/README.md)
@@ -226,6 +239,30 @@ load-balancer hops are all included, not just model-side generation time.
 - **Backend-specific errors** - correlate the `IP ADDRESS` column with
   `HTTP CODE` to see which backend is misbehaving
 
+### CDN, Edge & Backend Provenance (`--server-hints`, `--capture-header`)
+
+When a single IP hides many backends (a CDN or a reverse proxy in front of a
+pool), the `IP ADDRESS` column alone cannot tell them apart. `--server-hints`
+reads the response headers that do, one row per request, then rolls each header
+up as **constant** (same every run), **varied** (a few distinct values, the real
+"which backend served it" signal), or **per-request** (a different value every
+run, typically a trace or request id).
+
+- **Which edge/PoP served each request** - `x-served-by`, `x-amz-cf-pop`, and
+  `cf-ray` reveal CDN point-of-presence and cache-node rotation across `-c N`
+  runs, even though every request hit the same anycast IP
+- **Cache hit ratio over the wire** - `x-cache` / `cf-cache-status` varying
+  `HIT` vs `MISS` across runs shows how often you are actually served from cache
+- **Which backend pod answered** - track your own routing headers with
+  `--capture-header x-backend --capture-header x-pod-name`; a header that varies
+  between a handful of values maps directly to the pods in rotation
+- **Confirm a header is present at all** - a `--capture-header` value that shows
+  `-` on every run tells you the server never sent it
+- **Readable multi-hop chains** - Fastly/Varnish chains like
+  `x-served-by = shield-IAD, shield-IAD, edge-PAO` collapse by default to just
+  `x-served-by(final) = edge-PAO   [3 hops in chain]`; add `--full-cdn` when you
+  want the whole chain
+
 ### Authentication & Specific Endpoints
 
 - **Authenticated APIs** - use `-H "Authorization: Bearer token"` to test
@@ -356,6 +393,18 @@ chmod +x check-endpoint.py
 # Show selected response headers and the cache HIT/MISS verdict
 ./check-endpoint.py --show-headers https://example.com
 
+# See which server/edge/backend answered each of 10 requests
+./check-endpoint.py -c 10 --server-hints https://example.com
+
+# Track specific headers per request (repeatable, case-insensitive)
+./check-endpoint.py -c 10 --capture-header x-backend --capture-header x-pod-name https://example.com
+
+# Show the full multi-hop CDN chain (final hop only is the default)
+./check-endpoint.py -c 10 --server-hints --full-cdn https://example.com
+
+# Force fresh connections so each run can land on a different backend
+./check-endpoint.py -c 10 -F --server-hints https://example.com
+
 # Run as a Prometheus exporter that re-probes on every scrape
 ./check-endpoint.py --prometheus --prometheus-port 9109 https://example.com
 ```
@@ -389,6 +438,9 @@ chmod +x check-endpoint.py
 | `--expect-regex RE`                             | Fail if the response body does not match regex `RE`                                                                                           |
 | `--tls-info`                                    | After the run, print TLS certificate details (issuer, expiry with days left, SANs)                                                            |
 | `--show-headers`                                | After the run, print selected response headers and the cache `HIT`/`MISS` verdict                                                             |
+| `--server-hints`                                | After the run, print a per-request summary of server/edge/CDN/backend-identifying headers, flagging which values stay constant, vary, or change every request |
+| `--capture-header NAME`                         | Capture a specific response header by name and show its value per request in that summary (repeatable, case-insensitive)                      |
+| `--full-cdn`                                    | Show the full comma-chained CDN/cache headers (`x-served-by`, `x-cache`, `x-cache-hits`, `via`); by default these collapse to just the final serving hop with the chain depth noted |
 | `--prometheus`                                  | Run as a Prometheus exporter daemon; re-probes on every scrape (see [contrib](contrib/check-endpoint-exporter/README.md))                     |
 | `--prometheus-port PORT`                        | Port for the `--prometheus` exporter (default: 9109)                                                                                          |
 | `--prometheus-bind ADDR`                        | Bind address for the `--prometheus` exporter (default: all interfaces)                                                                        |
@@ -449,6 +501,45 @@ Prints a curated set of response headers (server, content type, caching headers,
 and so on) from the final response, plus a detected cache `HIT`/`MISS` verdict.
 Handy when you suspect a CDN or proxy is the difference between "works on their
 end" and "broken from here."
+
+### Request provenance (`--server-hints`, `--capture-header`, `--full-cdn`)
+
+Where `--show-headers` shows only the final response, `--server-hints` walks
+**every** request and prints the headers that reveal which server, edge, CDN, or
+backend produced each one. Each successful run gets a row (number, IP, and the
+headers as `key=value`), followed by a rollup that classifies each header:
+
+- **constant** - the same value on every run (for example `server=nginx`)
+- **varied** - a few distinct values with per-value counts (the real signal for
+  which backend or PoP served each request, for example `x-cache = HIT x6,
+  MISS x4`)
+- **per-request** - a different value every run, which usually means a request
+  or trace id such as `cf-ray` rather than a backend hint
+
+Add `--capture-header NAME` (repeatable, case-insensitive) to also track your
+own headers, for example a backend or pod id; a header that is absent shows `-`.
+Pair with `-c N`, and optionally `-F` to avoid connection reuse, to expose
+load-balancer rotation and CDN point-of-presence selection.
+
+Some CDN/cache headers are a comma-separated chain of hops (Fastly/Varnish
+`x-served-by`, `x-cache`, `x-cache-hits`, `via`), oldest shield first and the
+edge that actually served you last. By default the summary collapses those to
+just the final hop and appends the chain depth, so a noisy value like
+`x-served-by = cache-iad-...-IAD, cache-iad-...-IAD, cache-pao-kpao1770024-PAO`
+reads as `x-served-by(final) = cache-pao-kpao1770024-PAO   [3 hops in chain]`,
+and `x-cache = MISS, HIT, HIT` collapses to the edge verdict `HIT`. Only those
+known chained headers are collapsed; pass `--full-cdn` to see every hop in the
+raw chain instead.
+
+```bash
+# who served each of 10 requests, plus your own backend id (final hop only)
+./check-endpoint.py -c 10 --server-hints \
+    --capture-header x-backend https://example.com
+
+# same, but show the full CDN hop chain instead of just the final hop
+./check-endpoint.py -c 10 --server-hints --full-cdn \
+    --capture-header x-backend https://example.com
+```
 
 ### Prometheus exporter (`--prometheus`)
 
