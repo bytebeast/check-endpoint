@@ -1389,12 +1389,9 @@ def print_provenance_summary(results, want_hints, user_keys, full_cdn=False):
     # By DEFAULT chained CDN headers are collapsed to their final hop; only
     # --full-cdn shows the whole comma-separated chain.
     def _collapse(k, v):
-        return (
-            not full_cdn
-            and k in CDN_CHAINED_HEADERS
-            and v is not None
-            and "," in v
-        )
+        # fmt off
+        return not full_cdn and k in CDN_CHAINED_HEADERS and v is not None and "," in v
+        # fmt on
 
     ip_w = field_width("ip")
     # Per-request rows.
