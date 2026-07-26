@@ -67,6 +67,12 @@ except ImportError:
 APP_VERSION = "2.0.0"
 DEFAULT_USER_AGENT = f"check-endpoint/{APP_VERSION}"
 
+# Sent on every request unless the caller supplies their own Accept header
+# with -H. This matches what curl(1) sends by default; setting it explicitly
+# means the probe's request looks the same regardless of how libcurl was
+# built or configured.
+DEFAULT_ACCEPT = "*/*"
+
 # CURL_VERSION_HTTP2 feature bit - set when libcurl was built with nghttp2.
 # If this is False, --http2 will be silently ignored by libcurl (it falls
 # back to HTTP/1.1 without an error). Use this flag to warn the user early.
@@ -90,6 +96,13 @@ USER_AGENTS = {
         "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15"
     ),
     "googlebot": "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)",
+    # What the curl(1) command line tool itself sends. Use this when you want
+    # the request to be indistinguishable from a plain `curl` invocation, e.g.
+    # when a WAF or CDN treats unknown agents differently.
+    "curl": "curl/8.8.0",
+    # The previous value of the "curl" alias, kept under its own name so
+    # existing scripts can still reach it.
+    "pycurl": "pycurl/8.8.0",
 }
 
 # ── Catppuccin Mocha theme ────────────────────────────────────────────────────
@@ -583,6 +596,38 @@ def field_width(key):
     return 10
 
 
+# ── request headers ───────────────────────────────────────────────────────────
+
+
+def header_field_name(header):
+    """
+    The field name of a curl-style "Key: Value" header, lowercased.
+
+    Splitting on the first colon only, so a value containing colons (a URL in
+    Referer, say) does not confuse the name.
+    """
+    return header.split(":", 1)[0].strip().lower()
+
+
+def build_request_headers(headers):
+    """
+    Return the header list to hand to libcurl, with defaults filled in.
+
+    Adds "Accept: */*" unless an Accept header is already present. The match is
+    on the field name alone, so -H "Accept-Encoding: gzip" and
+    -H "Accept-Language: en" are NOT treated as overriding Accept.
+
+    Passing -H "Accept:" with an empty value is curl's idiom for suppressing a
+    header entirely; that counts as an override too, so the default is not
+    added back underneath it.
+    """
+    headers = list(headers or [])
+    if not any(header_field_name(h) == "accept" for h in headers):
+        # Prepended so explicit -H values still read last in --show-headers.
+        headers.insert(0, f"Accept: {DEFAULT_ACCEPT}")
+    return headers
+
+
 # ── single request ────────────────────────────────────────────────────────────
 
 
@@ -696,8 +741,9 @@ def run_once(
         curl.setopt(curl.FRESH_CONNECT, 1)
         curl.setopt(curl.FORBID_REUSE, 1)
 
-    if headers:
-        curl.setopt(curl.HTTPHEADER, headers)
+    # Always set, because build_request_headers() supplies a default Accept
+    # even when the caller passed no -H flags at all.
+    curl.setopt(curl.HTTPHEADER, build_request_headers(headers))
 
     if data is not None:
         curl.setopt(curl.POSTFIELDS, data)
@@ -1739,6 +1785,18 @@ USER-AGENT ALIASES (-a/--user-agent)
     edge       Microsoft Edge on Windows 10/11
     safari     Safari on macOS
     googlebot  Googlebot crawler UA
+    curl       curl/8.8.0, what the curl(1) command line tool sends
+    pycurl     pycurl/8.8.0
+
+DEFAULT REQUEST HEADERS
+  Every request carries 'Accept: */*' unless you supply your own Accept
+  header with -H, which replaces it:
+
+    -H "Accept: application/json"     send that instead
+    -H "Accept:"                      send no Accept header at all
+
+  Accept-Encoding and Accept-Language are separate headers and do not
+  replace the default Accept.
 
 WHAT IT CAN FIND
 
@@ -2071,7 +2129,11 @@ NOTE ON -p/-P (IP pinning)
         default=[],
         dest="headers",
         metavar="'Key: Value'",
-        help="custom request header, curl-style (repeatable)",
+        help=(
+            "custom request header, curl-style (repeatable). "
+            f"An Accept header here replaces the default '{DEFAULT_ACCEPT}'; "
+            'use -H "Accept:" to send none at all'
+        ),
     )
     parser.add_argument(
         "-d",
