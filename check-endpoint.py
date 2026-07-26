@@ -28,9 +28,20 @@ import statistics
 import sys
 import time
 from collections import Counter
-from datetime import UTC, datetime
+from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit
+
+# datetime.UTC is an alias for datetime.timezone.utc that was only added in
+# Python 3.11. Importing it unconditionally makes the whole script fail on 3.9
+# and 3.10 with "ImportError: cannot import name 'UTC' from 'datetime'", so
+# fall back to the older spelling when it is missing.
+try:
+    from datetime import UTC
+except ImportError:  # Python < 3.11
+    from datetime import timezone
+
+    UTC = timezone.utc
 
 # Cap how much response body we buffer for --expect-body / --expect-regex
 # checks, so a huge download can't exhaust memory. We only need enough to
