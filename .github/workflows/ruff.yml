@@ -1,30 +1,40 @@
-name: Ruff
-
+# .github/workflows/ruff.yml
+ 
+name: ruff
+ 
 on:
   push:
-    branches:
-      - main
+    branches: [main]
   pull_request:
   workflow_dispatch:
-
+ 
+# Without this block the job inherits the repository default token scope,
+# which may be read/write. Linting only reads.
+permissions:
+  contents: read
+ 
 jobs:
-  ruff:
+  lint:
+    name: ruff check and format
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/checkout@v4
+        with:
+          # checkout stores the job token in .git/config by default, where
+          # anything that later archives the workspace can pick it up.
+          # Nothing in this job pushes.
+          persist-credentials: false
+ 
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-
-      - name: Install Ruff
-        run: pip install ruff
-
-      - name: Check formatting
-        run: ruff format --check .
-
-      - name: Run linter
-        run: ruff check .
+ 
+      - run: pip install ruff
+ 
+      # Both read select/ignore/line-length from pyproject.toml, so a local
+      # run gives the same answer as CI.
+      - name: ruff check
+        run: ruff check --output-format github .
+ 
+      - name: ruff format
+        run: ruff format --check --diff .

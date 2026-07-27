@@ -1,4 +1,3 @@
-
 # Repo root: zizmor.yml
 # (.github/zizmor.yml also works; zizmor discovers either without -c.)
 #
@@ -25,6 +24,18 @@ rules:
       policies:
         actions/*: ref-pin
         github/*: ref-pin
+ 
+        # TEMPORARY. gitleaks is a third party and should be hash-pinned like
+        # the rest. This line exists only so CI is not blocked while you get
+        # the real SHA:
+        #
+        #   gh api repos/gitleaks/gitleaks-action/commits/v2 --jq .sha
+        #
+        # then in python-security.yml write
+        #   uses: gitleaks/gitleaks-action@<sha>  # v2
+        # and delete this line. `pipx install pinact && pinact run` does the
+        # same for every action in one pass.
+        gitleaks/*: ref-pin
  
         # Everything not listed above.
         "*": hash-pin

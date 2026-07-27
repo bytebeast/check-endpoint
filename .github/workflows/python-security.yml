@@ -78,8 +78,10 @@ jobs:
           # Full history so the scan covers every commit, not just the tip.
           fetch-depth: 0
           persist-credentials: false
- 
-      - uses: gitleaks/gitleaks-action@v2
+
+      # - uses: gitleaks/gitleaks-action@v2
+      # cli cmd: gh api repos/gitleaks/gitleaks-action/commits/v2 --jq .sha
+      - uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
  
