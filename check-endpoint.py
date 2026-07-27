@@ -39,9 +39,7 @@ from urllib.parse import urlsplit
 try:
     from datetime import UTC
 except ImportError:  # Python < 3.11
-    from datetime import timezone
-
-    UTC = timezone.utc
+    UTC = UTC
 
 # Cap how much response body we buffer for --expect-body / --expect-regex
 # checks, so a huge download can't exhaust memory. We only need enough to
@@ -375,7 +373,9 @@ def human_bytes(n):
 # ── output helpers ────────────────────────────────────────────────────────────
 
 
-def write_cell(text: str, width: int, color: str = "", reset: bool = True) -> None:
+def write_cell(
+    text: str, width: int, color: str = "", reset: bool = True
+) -> None:
     """
     Write a padded cell. Padding is applied to the PLAIN text first so that
     ANSI escape codes don't inflate the visual width. Color wraps the padded
@@ -678,7 +678,9 @@ def run_once(
         ip_display = pin_ip
     else:
         hostname, port = url_host_port(url)
-        ip_display = resolve_ip(hostname, port, ip_version) if hostname else None
+        ip_display = (
+            resolve_ip(hostname, port, ip_version) if hostname else None
+        )
 
     if not quiet:
         if ip_display is None:
@@ -807,7 +809,9 @@ def run_once(
         "chunks": None,
         "avggap": None,
         "maxgap": None,
-        "headers": parse_response_headers(header_lines) if capture_headers else None,
+        "headers": parse_response_headers(header_lines)
+        if capture_headers
+        else None,
         "body": bytes(body_buf) if capture_body else None,
         "cert": extract_cert_info(curl) if capture_cert else None,
     }
@@ -824,7 +828,8 @@ def run_once(
                 pointer += 1
             while pointer < len(LIVE_FIELD_KEYS):
                 write_empty_cell(
-                    LIVE_FIELD_KEYS[pointer], field_width(LIVE_FIELD_KEYS[pointer])
+                    LIVE_FIELD_KEYS[pointer],
+                    field_width(LIVE_FIELD_KEYS[pointer]),
                 )
                 pointer += 1
             for key in FINAL_FIELD_KEYS:
@@ -866,7 +871,10 @@ def run_once(
         # in-stream stutter. With fewer than 2 chunks there's no inter-chunk
         # gap to measure at all, so it's a genuine "n/a", not just missing.
         if chunk_count >= 2:
-            gaps = [chunk_times[i] - chunk_times[i - 1] for i in range(1, chunk_count)]
+            gaps = [
+                chunk_times[i] - chunk_times[i - 1]
+                for i in range(1, chunk_count)
+            ]
             res["avggap"] = sum(gaps) / len(gaps)
             res["maxgap"] = max(gaps)
             stream_stats["avggap"] = human_time(res["avggap"])
@@ -878,7 +886,9 @@ def run_once(
     if not quiet:
         for key in FINAL_FIELD_KEYS:
             value = (
-                stream_stats[key] if key in stream_stats else get_final_value(curl, key)
+                stream_stats[key]
+                if key in stream_stats
+                else get_final_value(curl, key)
             )
             _write_final_cell(key, value, field_width(key), rcol)
         sys.stdout.write(RESET + "\n")
@@ -942,7 +952,9 @@ def build_pin_resolve(url, pin_value, ip_version):
     if pin_value == "auto":
         family = socket.AF_INET6 if ip_version == "6" else socket.AF_INET
         try:
-            infos = socket.getaddrinfo(hostname, port, family, socket.SOCK_STREAM)
+            infos = socket.getaddrinfo(
+                hostname, port, family, socket.SOCK_STREAM
+            )
         except socket.gaierror as exc:
             sys.stderr.write(f"error: could not resolve {hostname}: {exc}\n")
             sys.exit(1)
@@ -980,7 +992,9 @@ def compute_phase_deltas(curl):
     total = curl.getinfo(pycurl.TOTAL_TIME)
     ttfb_raw = curl.getinfo(pycurl.STARTTRANSFER_TIME)
     out["download"] = (
-        max(total - ttfb_raw, 0.0) if total and ttfb_raw and ttfb_raw > 0 else None
+        max(total - ttfb_raw, 0.0)
+        if total and ttfb_raw and ttfb_raw > 0
+        else None
     )
     out["total"] = total if total and total > 0 else None
     return out
@@ -1073,7 +1087,9 @@ def evaluate_assertions(res, cfg):
         text = (res.get("body") or b"").decode("utf-8", "replace")
         if cfg["expect_body"] is not None and cfg["expect_body"] not in text:
             fails.append(f"body missing substring {cfg['expect_body']!r}")
-        if cfg["expect_regex"] is not None and not cfg["expect_regex"].search(text):
+        if cfg["expect_regex"] is not None and not cfg["expect_regex"].search(
+            text
+        ):
             fails.append(f"body did not match /{cfg['expect_regex'].pattern}/")
     return fails
 
@@ -1162,7 +1178,9 @@ def print_summary(results):
         sys.stdout.write(lbl + "".join(cell(fmt(v)) for v in computed) + "\n")
 
     for key, label in _SUMMARY_PHASES:
-        stat_row(label, [r["phases"].get(key) for r in ok], human_time, _cell_time)
+        stat_row(
+            label, [r["phases"].get(key) for r in ok], human_time, _cell_time
+        )
     stat_row("TOTAL_BYTES", [r["bytes"] for r in ok], human_bytes, _cell_bytes)
     sys.stdout.flush()
 
@@ -1307,7 +1325,9 @@ def print_headers_block(results):
     )
     ok = [r for r in results if not r["failed"] and r.get("headers")]
     if not ok:
-        sys.stdout.write(_col(C_LINENUM) + "  (no headers captured)" + end + "\n")
+        sys.stdout.write(
+            _col(C_LINENUM) + "  (no headers captured)" + end + "\n"
+        )
         sys.stdout.flush()
         return
     h = ok[-1]["headers"]
@@ -1332,7 +1352,10 @@ def print_headers_block(results):
         shown = True
     if not shown:
         sys.stdout.write(
-            _col(C_LINENUM) + "  (none of the common headers were present)" + end + "\n"
+            _col(C_LINENUM)
+            + "  (none of the common headers were present)"
+            + end
+            + "\n"
         )
     sys.stdout.flush()
 
@@ -1436,7 +1459,12 @@ def print_provenance_summary(results, want_hints, user_keys, full_cdn=False):
     # --full-cdn shows the whole comma-separated chain.
     def _collapse(k, v):
         # fmt off
-        return not full_cdn and k in CDN_CHAINED_HEADERS and v is not None and "," in v
+        return (
+            not full_cdn
+            and k in CDN_CHAINED_HEADERS
+            and v is not None
+            and "," in v
+        )
         # fmt on
 
     ip_w = field_width("ip")
@@ -1489,7 +1517,9 @@ def print_provenance_summary(results, want_hints, user_keys, full_cdn=False):
             )
         else:
             label = _col(BOLD + _PEACH) + f"  varied       {label_key}: " + end
-            top = ", ".join(f"{val}×{cnt}" for val, cnt in counts.most_common(6))
+            top = ", ".join(
+                f"{val}×{cnt}" for val, cnt in counts.most_common(6)
+            )
             more = "" if distinct <= 6 else f", +{distinct - 6} more"
             body = (
                 _col(_TEXT)
@@ -1559,7 +1589,11 @@ def build_prometheus_text(url, results, cert):
         )
         phase_metrics = [
             ("dns", "check_endpoint_dns_seconds", "DNS lookup time (seconds)"),
-            ("tcp", "check_endpoint_tcp_connect_seconds", "TCP connect time (seconds)"),
+            (
+                "tcp",
+                "check_endpoint_tcp_connect_seconds",
+                "TCP connect time (seconds)",
+            ),
             (
                 "tls",
                 "check_endpoint_tls_handshake_seconds",
@@ -1580,7 +1614,11 @@ def build_prometheus_text(url, results, cert):
                 "check_endpoint_body_download_seconds",
                 "Body download time (seconds)",
             ),
-            ("total", "check_endpoint_total_seconds", "Total request time (seconds)"),
+            (
+                "total",
+                "check_endpoint_total_seconds",
+                "Total request time (seconds)",
+            ),
         ]
         for key, name, help_text in phase_metrics:
             v = last["phases"].get(key)
@@ -1622,16 +1660,18 @@ class _MetricsHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         try:
             results, cert = self.server.probe_fn()
-            body = build_prometheus_text(self.server.probe_url, results, cert).encode(
-                "utf-8"
-            )
+            body = build_prometheus_text(
+                self.server.probe_url, results, cert
+            ).encode("utf-8")
             status = 200
         except Exception as exc:  # never let a scrape crash the server
             body = f"# probe error: {exc}\n".encode()
             status = 500
         try:
             self.send_response(status)
-            self.send_header("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+            self.send_header(
+                "Content-Type", "text/plain; version=0.0.4; charset=utf-8"
+            )
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
@@ -1641,7 +1681,9 @@ class _MetricsHandler(BaseHTTPRequestHandler):
     # HEAD is used by some health checks; answer it without a body.
     def do_HEAD(self):
         self.send_response(200)
-        self.send_header("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+        self.send_header(
+            "Content-Type", "text/plain; version=0.0.4; charset=utf-8"
+        )
         self.end_headers()
 
     def log_message(self, fmt, *args):
@@ -2084,7 +2126,10 @@ NOTE ON -p/-P (IP pinning)
 
     ip_group = parser.add_mutually_exclusive_group()
     ip_group.add_argument(
-        "-4", "--ipv4", action="store_true", help="force IPv4 resolution (default)"
+        "-4",
+        "--ipv4",
+        action="store_true",
+        help="force IPv4 resolution (default)",
     )
     ip_group.add_argument(
         "-6", "--ipv6", action="store_true", help="force IPv6 resolution"
@@ -2430,7 +2475,9 @@ NOTE ON -p/-P (IP pinning)
     # Headers must be captured for --show-headers, --server-hints, or any
     # --capture-header NAME. Any one of them turns on the per-response capture.
     capture_headers = (
-        args.show_headers or args.server_hints or bool(args.capture_header_names)
+        args.show_headers
+        or args.server_hints
+        or bool(args.capture_header_names)
     )
     capture_cert = args.tls_info
 
@@ -2508,7 +2555,9 @@ NOTE ON -p/-P (IP pinning)
             )
             for r in failed_runs:
                 prefix = _col(_MAROON) + f"  run {r['run']}:" + end
-                colored = "; ".join(_colorize_reason(x) for x in r["_assert_fails"])
+                colored = "; ".join(
+                    _colorize_reason(x) for x in r["_assert_fails"]
+                )
                 sys.stdout.write(f"{prefix} {colored}\n")
         sys.stdout.flush()
 
