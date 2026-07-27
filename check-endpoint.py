@@ -778,7 +778,7 @@ def run_once(
             multi.select(0.001)
 
         num_q, ok_list, err_list = multi.info_read()
-        for handle, errno, errmsg in err_list:
+        for _handle, errno, _errmsg in err_list:
             failed = True
             fail_errno = errno
 
@@ -1653,8 +1653,7 @@ class _MetricsHandler(BaseHTTPRequestHandler):
 
     def log_message(self, fmt, *args):
         sys.stderr.write(
-            "check-endpoint: scrape from %s - %s\n"
-            % (self.address_string(), fmt % args)
+            f"check-endpoint: scrape from {self.address_string()} - {fmt % args}\n"
         )
 
 
