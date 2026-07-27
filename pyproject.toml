@@ -1,2 +1,46 @@
+# pyproject.toml for bytebeast/check-endpoint
+#
+# Tooling config only. There is deliberately no [build-system] table: the
+# install path is the curl-to-PATH one in the README, not `pip install .`.
+
 [project]
+name = "check-endpoint"
+# Duplicated as APP_VERSION in check-endpoint.py. Bump both together.
+version = "2.0.0"
+
+# THE single source of truth for the minimum Python version.
+#
+# There is deliberately no [tool.ruff] target-version below. Ruff falls back
+# to this value when target-version is unset, taking the LOWER bound of the
+# range, so one line keeps ruff, pip and the README in agreement and the two
+# settings can never contradict each other.
+#
+# Raising this to 3.11 or higher switches on rule UP017 ("Use `datetime.UTC`
+# alias"), which rewrites the compatibility shim in check-endpoint.py into
+# `UTC = UTC` and deletes the `from datetime import timezone` behind it. That
+# is a NameError on 3.9 and 3.10, which is the failure the shim prevents.
 requires-python = ">=3.9"
+
+[tool.ruff]
+# 88 is ruff's default and matches how the script is already written; every
+# statement fits. Dropping to 80 rewraps roughly 75 lines.
+line-length = 88
+
+exclude = [".git", "__pycache__", ".venv"]
+
+# The exporter ships a copy of the script. Lint it once, not twice.
+extend-exclude = ["contrib/check-endpoint-exporter/check-endpoint.py"]
+
+[tool.ruff.lint]
+# E4/E7/E9 rather than the whole E group: keeps the real pycodestyle errors
+# but drops E501 line-length warnings, which are unfixable noise on comment
+# lines because the formatter does not rewrap comments.
+select = ["E4", "E7", "E9", "F", "W", "I", "UP", "B"]
+ignore = []
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[tool.pytest.ini_options]
+addopts = "-ra -q"

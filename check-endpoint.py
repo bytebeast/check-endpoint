@@ -39,9 +39,7 @@ from urllib.parse import urlsplit
 try:
     from datetime import UTC
 except ImportError:  # Python < 3.11
-    from datetime import timezone
-
-    UTC = timezone.utc
+    UTC = UTC
 
 # Cap how much response body we buffer for --expect-body / --expect-regex
 # checks, so a huge download can't exhaust memory. We only need enough to
@@ -780,7 +778,7 @@ def run_once(
             multi.select(0.001)
 
         num_q, ok_list, err_list = multi.info_read()
-        for handle, errno, errmsg in err_list:
+        for _handle, errno, _errmsg in err_list:
             failed = True
             fail_errno = errno
 
@@ -824,7 +822,8 @@ def run_once(
                 pointer += 1
             while pointer < len(LIVE_FIELD_KEYS):
                 write_empty_cell(
-                    LIVE_FIELD_KEYS[pointer], field_width(LIVE_FIELD_KEYS[pointer])
+                    LIVE_FIELD_KEYS[pointer],
+                    field_width(LIVE_FIELD_KEYS[pointer]),
                 )
                 pointer += 1
             for key in FINAL_FIELD_KEYS:
@@ -1559,7 +1558,11 @@ def build_prometheus_text(url, results, cert):
         )
         phase_metrics = [
             ("dns", "check_endpoint_dns_seconds", "DNS lookup time (seconds)"),
-            ("tcp", "check_endpoint_tcp_connect_seconds", "TCP connect time (seconds)"),
+            (
+                "tcp",
+                "check_endpoint_tcp_connect_seconds",
+                "TCP connect time (seconds)",
+            ),
             (
                 "tls",
                 "check_endpoint_tls_handshake_seconds",
@@ -1580,7 +1583,11 @@ def build_prometheus_text(url, results, cert):
                 "check_endpoint_body_download_seconds",
                 "Body download time (seconds)",
             ),
-            ("total", "check_endpoint_total_seconds", "Total request time (seconds)"),
+            (
+                "total",
+                "check_endpoint_total_seconds",
+                "Total request time (seconds)",
+            ),
         ]
         for key, name, help_text in phase_metrics:
             v = last["phases"].get(key)
@@ -1646,8 +1653,7 @@ class _MetricsHandler(BaseHTTPRequestHandler):
 
     def log_message(self, fmt, *args):
         sys.stderr.write(
-            "check-endpoint: scrape from %s - %s\n"
-            % (self.address_string(), fmt % args)
+            f"check-endpoint: scrape from {self.address_string()} - {fmt % args}\n"
         )
 
 
@@ -2084,7 +2090,10 @@ NOTE ON -p/-P (IP pinning)
 
     ip_group = parser.add_mutually_exclusive_group()
     ip_group.add_argument(
-        "-4", "--ipv4", action="store_true", help="force IPv4 resolution (default)"
+        "-4",
+        "--ipv4",
+        action="store_true",
+        help="force IPv4 resolution (default)",
     )
     ip_group.add_argument(
         "-6", "--ipv6", action="store_true", help="force IPv6 resolution"
