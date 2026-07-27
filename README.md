@@ -114,6 +114,15 @@ it in ways that aren't as convenient with the curl command-line interface.
 
 ## What Can It Find?
 
+Some of the cases below are ones I have run into myself. The others are common
+or fairly obvious issues that are simply worth having written down. Either way
+this is not an exhaustive list, and each column can point at plenty of things
+not covered here. If you know of a root cause that belongs under one of
+these columns, whether it drives up latency, produces intermittent failures, or
+just makes a column read strangely, please
+[open an issue](https://github.com/bytebeast/check-endpoint/issues) and I will
+add it.
+
 Run with `-c 10` or `-c 20` to surface patterns invisible in a single request.
 
 Sections below follow the **left-to-right order of the output columns**, so you
