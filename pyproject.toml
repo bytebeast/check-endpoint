@@ -1,2 +1,18 @@
 [project]
 requires-python = ">=3.9"
+
+[tool.ruff]
+line-length = 80
+target-version = "py312"
+exclude = [".git", "__pycache__", ".venv"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]
+ignore = []
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[tool.pytest.ini_options]
+addopts = "-ra -q"
