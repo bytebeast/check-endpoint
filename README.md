@@ -54,28 +54,28 @@ it in ways that aren't as convenient with the curl command-line interface.
 - **Per-phase deltas** - every column is the duration of that phase only, not a
   cumulative total
 - **Redirect accounting** - a `REDIRECT` column shows count and total time when
-  redirects are followed, explaining why `TOTAL TIME` can exceed the sum of the
+  redirects are followed, explaining why `TOTAL_TIME` can exceed the sum of the
   other columns
 - **Failure markers** - `<DNS-FAIL>`, `<CONN-FAIL>`, `<TLS-FAIL>`, `<TO>`, and
   more - printed at exactly the phase that failed
 - **Clear empty-cell conventions** - a dim `n/a` marks a phase that structurally
-  doesn't apply (e.g. `TLS HANDSHAKE` on plain `http://`, or `REDIRECT` when
+  doesn't apply (e.g. `TLS_HANDSHAKE` on plain `http://`, or `REDIRECT` when
   none occurred); a dim `-` marks a field that's empty for any other reason
 - **IP pinning** - pin repeated requests to one IP to avoid measuring different
   backends across a DNS round-robin
 - **Streaming / chunked-transfer testing** - `-S`/`--stream` times every chunk
-  as it arrives (not just first/last byte) and reports `CHUNKS`, `AVG GAP`, and
-  `MAX GAP` columns - the gaps measured are strictly _between_ chunks, not
+  as it arrives (not just first/last byte) and reports `CHUNKS`, `AVG_GAP`, and
+  `MAX_GAP` columns - the gaps measured are strictly _between_ chunks, not
   including the first chunk's arrival (that span is already covered by the
-  DNS/TCP/TLS/PRE-TRANSFER/1ST BYTE columns) - so you can see whether an SSE or
+  DNS/TCP/TLS/PRE-TRANSFER/1ST_BYTE columns) - so you can see whether an SSE or
   chunked response streams smoothly or stalls mid-transfer
 - **Catppuccin Mocha color theme** - timing magnitude encoded in color (cool
   blues for fast, warm peach/red for slow); auto-disabled when output is piped
 - **curl-compatible flags** - `-H`, `-d`, `-X`, `-4`/`-6`, `-F`, `-a`,
   `-p`/`-P`, `-S`
 - **HTTP/2 support** - `--http2` requests HTTP/2 via ALPN negotiation; a `PROTO`
-  column (printed last, after `TOTAL BYTES`) shows the protocol actually used
-  (`h1` or `h2`); falls back gracefully to HTTP/1.1
+  column (printed last, after `TOTAL_BYTES`) shows the protocol actually used
+  (`h1`, `h1.0`, `h2`, or `h3`); falls back gracefully to HTTP/1.1
 - **Body and header support** - POST payloads, auth headers, custom content
   types; works against authenticated and stateful endpoints
 - **Percentile summary** - `--stats` reports min / p50 / p90 / p95 / p99 / max /
@@ -116,133 +116,274 @@ it in ways that aren't as convenient with the curl command-line interface.
 
 Run with `-c 10` or `-c 20` to surface patterns invisible in a single request.
 
-### DNS & Resolution
+Sections below follow the **left-to-right order of the output columns**, so you
+can read a row of output and jump straight to the section for whichever column
+looks wrong. Every column has a section; the two at the end are cross-column and
+are driven by flags rather than by a single field.
+
+| Column                           | Section                          |
+| -------------------------------- | -------------------------------- |
+| `#`                              | Run count, warm-up & outliers    |
+| `IP_ADDRESS`                     | Load balancing & round-robin     |
+| `DNS`                            | DNS & resolution                 |
+| `TCP_CONNECT`                    | TCP & network                    |
+| `TLS_HANDSHAKE`                  | TLS & security                   |
+| `PRE-TRANSFER`                   | Client-side & proxy setup        |
+| `1ST_BYTE`                       | Server processing                |
+| `REDIRECT`                       | Redirect chains                  |
+| `BODY_DL`                        | Body transfer & server-side IO   |
+| `TOTAL_TIME`                     | End-to-end budget                |
+| `HTTP_CODE`                      | Status codes & flakiness         |
+| `TOTAL_BYTES`                    | Response size & content drift    |
+| `PROTO`                          | HTTP version                     |
+| `CHUNKS` / `AVG_GAP` / `MAX_GAP` | Streaming responses (`-S`)       |
+
+---
+
+### `[#]` - Run count, warm-up & outliers
+
+- **Warm-up on run 1** - the first request pays for cold DNS, a fresh TCP
+  handshake, and a full TLS negotiation; runs 2+ reuse all three. Compare run 1
+  against the rest before concluding anything is slow. If runs 2+ _don't_ drop,
+  that itself is the finding (see the `DNS`, `TCP_CONNECT` and `TLS_HANDSHAKE`
+  sections)
+- **Outlier requests** - a single request dramatically slower than the rest
+  reveals cold cache misses, JVM garbage collection pauses, or lock contention
+- **Intermittent timeouts** - one or two `<TO>` markers among otherwise
+  successful requests indicate connection pool exhaustion, GC pauses, or health
+  check races
+- **How many runs you need** - `-c 10` is enough to spot round-robin and obvious
+  flakiness; `--stats` p95/p99 only become meaningful around `-c 20` and up
+
+### `[IP_ADDRESS]` - Load balancing & round-robin
+
+- **Uneven backends** - without `-P`, different IPs per request show which
+  backends are in rotation; timing differences per IP identify the slow ones
+- **Isolate one backend** - use `-P` to pin all requests to a single IP; then
+  switch IPs to compare them individually
+- **Backend-specific errors** - correlate the `IP_ADDRESS` column with
+  `HTTP_CODE` to see which backend is misbehaving
+- **Rotation mid-test** - the IP changing partway through a `-c N` run means a
+  DNS TTL expired and the resolver handed back a different member of the pool
+- **One IP is not one server** - behind a CDN or an anycast address, every
+  request hits the same IP while landing on different edge nodes. `IP_ADDRESS`
+  cannot see that; `--server-hints` can
+- **IPv4 vs IPv6 paths differ** - run `-4` and `-6` separately against the same
+  host; a large gap points at a misconfigured or unoptimised AAAA path
+
+### `[DNS]` - DNS & resolution
 
 - **Slow or flaky resolvers** - high or variable DNS times across runs
 - **Missing local DNS cache** - DNS stays high every request instead of dropping
   to ~0ms after the first lookup
 - **Short TTLs** - DNS spikes when the record expires mid-test
+- **libcurl's own cache hides the real cost** - runs 2+ normally show ~0ms
+  because libcurl caches within the process, not because your resolver is fast.
+  Use `-F` to force a fresh lookup every run and measure the true cost
+- **Deep CNAME chains** - a hostname pointing through several CNAMEs before the
+  final A/AAAA record costs extra round-trips, showing as consistently elevated
+  DNS even on a healthy resolver
 - **`<DNS-FAIL>`** - hostname cannot be resolved at all
 
-### TCP & Network
+### `[TCP_CONNECT]` - TCP & network
 
-- **Geographic latency** - high TCP CONNECT reveals round-trip time to the
+- **Geographic latency** - high TCP_CONNECT reveals round-trip time to the
   server
 - **Connection backlog** - TCP time grows as the server runs out of accept queue
   capacity under load
 - **Firewall / filtering** - `<CONN-FAIL>` on specific ports or from specific
   network paths
+- **Connection reuse not happening** - TCP should collapse to ~0ms from run 2
+  onwards. If it stays high on every run without `-F`, something is closing the
+  connection each time: `Connection: close`, a proxy, or a load-balancer idle
+  timeout
+- **Packet loss** - an occasional TCP time several times the median, with the
+  rest steady, suggests a lost SYN being retransmitted
+- **A proxy shortens what you're measuring** - with a proxy in the path this
+  column is the time to the _proxy_, not to the origin
 
-### TLS & Security
+### `[TLS_HANDSHAKE]` - TLS & security
 
 - **Missing session resumption** - TLS time stays high on every repeat request
   instead of dropping after the first; compare run 1 vs run 2+
 - **Slow OCSP validation or long cert chains** - consistently elevated TLS time
   even without load
+- **TLS 1.2 vs 1.3** - 1.3 completes in one round-trip and 1.2 needs two, so a
+  handshake at roughly twice the TCP time suggests the server negotiated 1.2
+- **`n/a` on an `http://` URL is expected**; a _value_ here on an `http://` URL
+  means the request was redirected to HTTPS - check the `REDIRECT` column
+- **Certificate expiry** - pair with `--tls-info` for issuer, SANs, and days
+  remaining before the certificate lapses
 - **`<TLS-FAIL>`** - expired cert, hostname mismatch, or untrusted CA
 
-### Server Processing (`1ST BYTE` - most diagnostic column)
+### `[PRE-TRANSFER]` - Client-side & proxy setup
 
-- **Slow backend** - high 1ST BYTE reveals heavy server work: DB queries, auth
+- **Non-zero `PRE-TRANSFER`** - this phase is internal libcurl bookkeeping and
+  is normally ~0ms; consistently high values indicate CPU pressure on the
+  machine running the script
+- **Proxy tunnel setup** - when connecting through an HTTP proxy, the `CONNECT`
+  exchange lands in this column rather than in `TCP_CONNECT`
+- **A useful control** - because it should be ~0ms on a direct connection, a
+  non-zero value warns that the measurements themselves may be distorted by
+  local load; treat the rest of that row with suspicion
+
+### `[1ST_BYTE]` - Server processing
+
+The most diagnostic column in the table.
+
+- **Slow backend** - high 1ST_BYTE reveals heavy server work: DB queries, auth
   checks, computation, rendering
-- **Queue depth behind a reverse proxy** - fast TCP but slow 1ST BYTE means the
+- **Queue depth behind a reverse proxy** - fast TCP but slow 1ST_BYTE means the
   proxy accepted the connection but the backend was busy
-- **Backend inconsistency** - variable 1ST BYTE across runs reveals hot/cold
+- **Backend inconsistency** - variable 1ST_BYTE across runs reveals hot/cold
   cache states, uneven DB load, or connection pool exhaustion
-- **Classic pattern: high `1ST BYTE` + fast `BODY DL`** - server is slow to
+- **Classic pattern: high `1ST_BYTE` + fast `BODY_DL`** - server is slow to
   produce the response but fast to deliver it; the bottleneck is computation or
   IO server-side, not the network
-- **Slow DB providing response data** - consistently high 1ST BYTE while BODY DL
+- **Slow DB providing response data** - consistently high 1ST_BYTE while BODY_DL
   is fast points directly at backend data retrieval time
+- **Turn it into a check** - `--max-ttfb 300ms` fails the run when the backend
+  crosses your threshold, the single most useful assertion for CI
 
-### Body Transfer & Server-side IO
+### `[REDIRECT]` - Redirect chains
 
-- **Slow server IO** - high BODY DL relative to content size (slow disk reads,
+- **Why `TOTAL_TIME` exceeds the sum of the other columns** - every other column
+  describes the _final_ connection only. Redirect round-trips are accounted for
+  here and nowhere else
+- **The cost of an `http://` → `https://` upgrade** - hitting the plain-HTTP URL
+  pays for an extra DNS + TCP round-trip before the real request starts. Request
+  the `https://` URL directly and this column drops to `n/a`
+- **Redirects to a different host** - when the redirect crosses hostnames, the
+  `DNS`, `TCP_CONNECT` and `TLS_HANDSHAKE` columns describe the _destination_,
+  not the URL you asked for, and `IP_ADDRESS` will not match the original
+  hostname
+- **Cross-region redirects** - a `.com` that redirects to a country-specific
+  domain can add latency invisible in any other column
+- **`<RDR-FAIL>`** - a redirect loop, or a chain longer than libcurl will follow
+
+### `[BODY_DL]` - Body transfer & server-side IO
+
+- **Slow server IO** - high BODY_DL relative to content size (slow disk reads,
   DB result streaming)
-- **Bandwidth throttling** - BODY DL scales disproportionately with response
+- **Bandwidth throttling** - BODY_DL scales disproportionately with response
   size
-- **Inconsistent content size** - `TOTAL BYTES` varies across `-c N` runs:
-  reveals A/B tests, CDN inconsistencies, partial or truncated responses, or
+- **Responses are uncompressed by default** - the probe does not send
+  `Accept-Encoding`, so servers return identity encoding. Add
+  `-H "Accept-Encoding: gzip"` to measure what a browser actually experiences;
+  `BODY_DL` and `TOTAL_BYTES` should both drop sharply, and if they don't,
+  compression isn't configured, which is the finding
+- **TCP slow-start on large bodies** - the first response over a fresh
+  connection transfers more slowly than later ones; compare run 1 against runs
+  2+ before blaming the server
+
+### `[TOTAL_TIME]` - End-to-end budget
+
+- **The only cumulative column** - every other timing column is that phase
+  alone. Use this one for SLOs and user-facing budgets
+- **When it doesn't add up** - if `TOTAL_TIME` is much larger than the sum of
+  the phases, the difference is almost always in `REDIRECT`
+- **Tail latency, not averages** - `--stats` reports p50/p90/p95/p99; a healthy
+  p50 alongside a p99 several times higher is the signature of an intermittent
+  problem that averages hide
+- **Turn it into a check** - `--max-total 1s` exits non-zero when breached, so
+  the probe drops straight into CI or cron
+
+### `[HTTP_CODE]` - Status codes & flakiness
+
+- **Mixed response codes** - running `-c 20` surfaces occasional 502/503 mixed
+  with 200s, revealing backend instability, pods cycling in Kubernetes, or
+  upstream timeouts
+- **Rate limiting under repetition** - 429s appearing partway through a `-c 20`
+  run mean you found the rate limit, not an outage; slow the probe down before
+  reading anything else into the results
+- **Auth problems** - 401/403, or the `<AUTH-FAIL>` marker, when testing
+  protected endpoints with `-H "Authorization: ..."`
+- **A 3xx here means redirects were followed** - the code shown is the _final_
+  response; check the `REDIRECT` column for what happened on the way
+- **Assert on it** - `--assert-status 200` fails the run on anything else
+
+### `[TOTAL_BYTES]` - Response size & content drift
+
+- **Inconsistent content size** - `TOTAL_BYTES` varies across `-c N` runs, revealing A/B tests, CDN inconsistencies, partial or truncated responses, or
   outright payload bugs
+- **Suspiciously small 200s** - a successful status with a tiny body is often a
+  soft error page or an empty JSON envelope; `--expect-body` or `--expect-regex`
+  turn that into a real failure
+- **Truncated transfers** - a byte count well below the rest of the run,
+  especially alongside `<RECV-FAIL>`, means the response was cut short
+- **Compression state** - see the `BODY_DL` note above; byte counts are for the
+  encoding actually received
 
-### Streaming Responses (SSE / Chunked Transfer) - `-S`/`--stream`
+### `[PROTO]` - HTTP version
 
-Without `-S`, a streaming response is still measured meaningfully: `1ST BYTE` is
-the time until the first chunk/token arrives, and `BODY DL` is the total
+- **Verify HTTP/2 is actually active** - `--http2` with the `PROTO` column
+  confirms whether the server is serving `h2` or falling back to `h1`. Useful to
+  verify CDN or load balancer HTTP/2 configuration
+- **Connection reuse visible in timing** - on repeated `-c N` runs with
+  `--http2`, TCP_CONNECT and TLS_HANDSHAKE drop to `<1ms` from run 2 onwards,
+  confirming the persistent connection is being reused, one of HTTP/2's main
+  performance benefits
+- **Detect HTTP/2 connection issues** - if `PROTO` shows `h1` despite `--http2`,
+  the server or an intermediate proxy is downgrading the connection
+- **Values you may see** - `h1` (HTTP/1.1), `h1.0` (HTTP/1.0), `h2` (HTTP/2),
+  `h3` (HTTP/3). An `h1.0` is worth investigating on its own: it usually means
+  an old proxy in the path, and HTTP/1.0 disables keep-alive by default
+
+### `[CHUNKS]` `[AVG_GAP]` `[MAX_GAP]` - Streaming responses (SSE / chunked transfer)
+
+Only present with `-S`/`--stream`.
+
+Without `-S`, a streaming response is still measured meaningfully: `1ST_BYTE` is
+the time until the first chunk/token arrives, and `BODY_DL` is the total
 duration of the whole stream. What's missing without `-S` is the rhythm of the
-stream - whether it arrives steadily or in bursts with stalls.
+stream, whether it arrives steadily or in bursts with stalls.
 
-`AVG GAP` and `MAX GAP` measure the time strictly between chunks - the first
+`AVG_GAP` and `MAX_GAP` measure the time strictly between chunks. The first
 chunk's arrival is deliberately excluded, since that span is already the DNS +
-TCP + TLS + PRE-TRANSFER + 1ST BYTE columns; counting it again here would
+TCP + TLS + PRE-TRANSFER + 1ST_BYTE columns; counting it again here would
 misreport ordinary connection setup as if it were an in-stream stall. With fewer
 than 2 chunks there's no inter-chunk gap to measure, so both columns correctly
 show `n/a` rather than a misleading number.
 
-This makes `AVG GAP` functionally the same metric LLM serving benchmarks call
-**Inter-Token Latency (ITL)** - the average time between successive tokens.
+This makes `AVG_GAP` functionally the same metric LLM serving benchmarks call
+**Inter-Token Latency (ITL)**, the average time between successive tokens.
 Measuring it over the wire, rather than trusting server-side logs, captures what
 the client actually experiences: network jitter, reverse-proxy buffering, and
 load-balancer hops are all included, not just model-side generation time.
 
-- **Token stutter / uneven generation** - a large gap between `AVG GAP` and
-  `MAX GAP` means the stream paused somewhere in the middle, even though
-  `BODY DL` and `TOTAL TIME` look fine in aggregate. This is exactly the kind of
+- **Token stutter / uneven generation** - a large gap between `AVG_GAP` and
+  `MAX_GAP` means the stream paused somewhere in the middle, even though
+  `BODY_DL` and `TOTAL_TIME` look fine in aggregate. This is exactly the kind of
   thing that makes a chat UI feel like it "hangs then dumps text."
 - **Buffering misconfigurations** - if a reverse proxy is accidentally buffering
   the whole response before forwarding it (a common `nginx proxy_buffering`
-  misconfiguration), `CHUNKS` collapses to 1 or 2, `AVG GAP`/ `MAX GAP` show
-  `n/a`, and `1ST BYTE` balloons to roughly equal `TOTAL TIME` - the "stream"
+  misconfiguration), `CHUNKS` collapses to 1 or 2, `AVG_GAP`/ `MAX_GAP` show
+  `n/a`, and `1ST_BYTE` balloons to roughly equal `TOTAL_TIME`, so the "stream"
   isn't actually streaming.
-- **Inconsistency across backend replicas** - combine with `IP ADDRESS` to see
+- **Inconsistency across backend replicas** - combine with `IP_ADDRESS` to see
   whether one particular backend produces the stutter (uneven load, resource
   pressure) while others stream smoothly.
 - **ITL benchmarking without server-side instrumentation** - if you don't have
   access to your model server's internal metrics (or you're testing someone
   else's API), `-c 20 -S` gives you a client-side ITL measurement for free:
-  `AVG GAP` is your typical inter-token latency, `MAX GAP` is your worst-case,
+  `AVG_GAP` is your typical inter-token latency, `MAX_GAP` is your worst-case,
   and running multiple requests shows whether ITL is consistent or degrades
   under concurrent load.
 - **Works with auth and POST bodies** - `-S` composes with `-H`/`-d`/`-X`, so
   you can test real chat-completion or SSE endpoints directly:
   `-X POST -d '{"stream": true, ...}' -H "Authorization: Bearer ..." -S`
 
-### Intermittent & Flaky Behavior
+---
 
-- **Mixed response codes** - running `-c 20` surfaces occasional 502/503 mixed
-  with 200s, revealing backend instability, pods cycling in Kubernetes, or
-  upstream timeouts
-- **Intermittent timeouts** - one or two `<TO>` markers among otherwise
-  successful requests indicate connection pool exhaustion, GC pauses, or health
-  check races
-- **Outlier requests** - a single request dramatically slower than the rest
-  reveals cold cache misses, JVM garbage collection pauses, or lock contention
+### Beyond the columns
 
-### HTTP/2 Protocol
+These two aren't tied to a single column. They're driven by flags, and read
+from the response headers or from what you send.
 
-- **Verify HTTP/2 is actually active** - `--http2` with the `PROTO` column
-  (rightmost column) confirms whether the server is serving `h2` or falling back
-  to `h1`. Useful to verify CDN or load balancer HTTP/2 configuration.
-- **Connection reuse visible in timing** - on repeated `-c N` runs with
-  `--http2`, TCP CONNECT and TLS HANDSHAKE drop to `<1ms` from run 2 onwards,
-  confirming the persistent connection is being reused - one of HTTP/2's main
-  performance benefits.
-- **Detect HTTP/2 connection issues** - if `PROTO` shows `h1` despite `--http2`,
-  the server or an intermediate proxy is downgrading the connection.
-
-### Load Balancing & Round-Robin
-
-- **Uneven backends** - without `-P`, different IPs per request show which
-  backends are in rotation; timing differences per IP identify the slow ones
-- **Isolate one backend** - use `-P` to pin all requests to a single IP; then
-  switch IPs to compare them individually
-- **Backend-specific errors** - correlate the `IP ADDRESS` column with
-  `HTTP CODE` to see which backend is misbehaving
-
-### CDN, Edge & Backend Provenance (`--server-hints`, `--capture-header`)
+#### `--server-hints` / `--capture-header` - CDN, edge & backend provenance
 
 When a single IP hides many backends (a CDN or a reverse proxy in front of a
-pool), the `IP ADDRESS` column alone cannot tell them apart. `--server-hints`
+pool), the `IP_ADDRESS` column alone cannot tell them apart. `--server-hints`
 reads the response headers that do, one row per request, then rolls each header
 up as **constant** (same every run), **varied** (a few distinct values, the real
 "which backend served it" signal), or **per-request** (a different value every
@@ -263,7 +404,7 @@ run, typically a trace or request id).
   `x-served-by(final) = edge-PAO   [3 hops in chain]`; add `--full-cdn` when you
   want the whole chain
 
-### Authentication & Specific Endpoints
+#### `-H` / `-d` / `-X` - Authentication & specific endpoints
 
 - **Authenticated APIs** - use `-H "Authorization: Bearer token"` to test
   protected endpoints; `<AUTH-FAIL>` or 401/403 reveals auth configuration
@@ -275,12 +416,9 @@ run, typically a trace or request id).
   validation degrades or fails on repeated calls
 - **Header-conditional behavior** - send routing or feature-flag headers
   (`-H "X-Feature: beta"`) to test conditional server logic
-
-### Client-Side
-
-- **Non-zero `PRE-TRANSFER`** - this phase is internal libcurl bookkeeping and
-  is normally ~0ms; consistently high values indicate CPU pressure on the
-  machine running the script
+- **Content negotiation** - the probe sends `Accept: */*` unless you override
+  it; `-H "Accept: application/json"` reveals endpoints that serve HTML to
+  generic clients and JSON to specific ones
 
 ---
 
@@ -426,13 +564,13 @@ chmod +x check-endpoint.py
 | `-F` / `--force-dns`                            | Disable libcurl's DNS cache and connection reuse                                                                                              |
 | `-P` / `--auto-pin`                             | Resolve once, then pin all repeats to that IP                                                                                                 |
 | `-p IP` / `--pin-ip IP`                         | Pin all repeats to a specific IP address                                                                                                      |
-| `-S` / `--stream`                               | Time the gaps between chunks as they arrive and report `CHUNKS`/`AVG GAP`/`MAX GAP` - for testing SSE or chunked-transfer streaming responses |
+| `-S` / `--stream`                               | Time the gaps between chunks as they arrive and report `CHUNKS`/`AVG_GAP`/`MAX_GAP` - for testing SSE or chunked-transfer streaming responses |
 | `--http2`                                       | Request HTTP/2 via ALPN (HTTPS); falls back to HTTP/1.1 if unsupported                                                                        |
 | `--http2-prior-knowledge`                       | Send HTTP/2 over cleartext `http://` (h2c); only when the server is known to speak it                                                         |
 | `--stats`                                       | Print a percentile summary (min/p50/p90/p95/p99/max/mean/stdev) per phase; needs `-c 2` or more                                               |
 | `--assert-status CODE`                          | Fail (exit 1) if the HTTP status is not `CODE`                                                                                                |
-| `--max-total DUR`                               | Fail if `TOTAL TIME` exceeds `DUR` (`500ms`, `1s`, `1.5s`)                                                                                    |
-| `--max-ttfb DUR`                                | Fail if `1ST BYTE` (time to first byte) exceeds `DUR`                                                                                         |
+| `--max-total DUR`                               | Fail if `TOTAL_TIME` exceeds `DUR` (`500ms`, `1s`, `1.5s`)                                                                                    |
+| `--max-ttfb DUR`                                | Fail if `1ST_BYTE` (time to first byte) exceeds `DUR`                                                                                         |
 | `--max-dns` / `-tcp` / `-tls` / `-download DUR` | Fail if that individual phase exceeds `DUR`                                                                                                   |
 | `--expect-body STR`                             | Fail if the response body does not contain `STR`                                                                                              |
 | `--expect-regex RE`                             | Fail if the response body does not match regex `RE`                                                                                           |
@@ -576,35 +714,35 @@ or scrape annotations) and example alert rules.
 | Column          | Description                                                                                                                                                                             |
 | --------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `#`             | Request number                                                                                                                                                                          |
-| `IP ADDRESS`    | IP address libcurl connected to                                                                                                                                                         |
+| `IP_ADDRESS`    | IP address libcurl connected to                                                                                                                                                         |
 | `DNS`           | Duration of DNS lookup (phase only)                                                                                                                                                     |
-| `TCP CONNECT`   | Duration of TCP handshake (phase only)                                                                                                                                                  |
-| `TLS HANDSHAKE` | Duration of TLS negotiation; `n/a` for plain `http://`                                                                                                                                  |
+| `TCP_CONNECT`   | Duration of TCP handshake (phase only)                                                                                                                                                  |
+| `TLS_HANDSHAKE` | Duration of TLS negotiation; `n/a` for plain `http://`                                                                                                                                  |
 | `PRE-TRANSFER`  | Time from connect-ready to request-send-ready; typically ~0ms on direct HTTPS                                                                                                           |
-| `1ST BYTE`      | Time from request sent to first byte of response - the clearest indicator of server-side processing time                                                                                |
-| `REDIRECT`      | Count and total time of any redirects followed; `n/a` when none. This is why `TOTAL TIME` can exceed the sum of other columns.                                                          |
-| `BODY DL`       | Time to receive the complete response body after the first byte                                                                                                                         |
-| `TOTAL TIME`    | End-to-end wall-clock time including all redirects (the only cumulative column)                                                                                                         |
-| `HTTP CODE`     | HTTP response status code                                                                                                                                                               |
-| `TOTAL BYTES`   | Response body size received                                                                                                                                                             |
-| `PROTO`         | HTTP version actually used - `h1` (HTTP/1.1) or `h2` (HTTP/2). Teal for h2, dim for h1.                                                                                                 |
+| `1ST_BYTE`      | Time from request sent to first byte of response - the clearest indicator of server-side processing time                                                                                |
+| `REDIRECT`      | Count and total time of any redirects followed; `n/a` when none. This is why `TOTAL_TIME` can exceed the sum of other columns.                                                          |
+| `BODY_DL`       | Time to receive the complete response body after the first byte                                                                                                                         |
+| `TOTAL_TIME`    | End-to-end wall-clock time including all redirects (the only cumulative column)                                                                                                         |
+| `HTTP_CODE`     | HTTP response status code                                                                                                                                                               |
+| `TOTAL_BYTES`   | Response body size received                                                                                                                                                             |
+| `PROTO`         | HTTP version actually used - `h1` (HTTP/1.1), `h1.0` (HTTP/1.0), `h2` (HTTP/2), or `h3` (HTTP/3). Teal for h2, dim for h1.                                                                                                 |
 | `CHUNKS`        | _(only with `-S`)_ Number of chunks the response body arrived in                                                                                                                        |
-| `AVG GAP`       | _(only with `-S`)_ Average time between consecutive chunks, excluding the first chunk's arrival (already covered by 1ST BYTE and the columns before it); `n/a` with fewer than 2 chunks |
-| `MAX GAP`       | _(only with `-S`)_ Longest of those inter-chunk gaps - a high `MAX GAP` relative to `AVG GAP` reveals a mid-stream stall; `n/a` with fewer than 2 chunks                                |
+| `AVG_GAP`       | _(only with `-S`)_ Average time between consecutive chunks, excluding the first chunk's arrival (already covered by 1ST_BYTE and the columns before it); `n/a` with fewer than 2 chunks |
+| `MAX_GAP`       | _(only with `-S`)_ Longest of those inter-chunk gaps - a high `MAX_GAP` relative to `AVG_GAP` reveals a mid-stream stall; `n/a` with fewer than 2 chunks                                |
 
-`CHUNKS`, `AVG GAP`, and `MAX GAP` only appear when `-S`/`--stream` is passed;
+`CHUNKS`, `AVG_GAP`, and `MAX_GAP` only appear when `-S`/`--stream` is passed;
 without it, the columns end at `PROTO` and the rest of the table is unaffected.
 
 > **Note on `PRE-TRANSFER = 0ms`:** This is correct behavior for direct HTTPS
 > connections. Once TLS completes, libcurl is immediately ready to transfer -
 > the gap between those two timers is genuinely near zero.
 >
-> **Note on `TLS HANDSHAKE` appearing on `http://` URLs:** This is correct when
+> **Note on `TLS_HANDSHAKE` appearing on `http://` URLs:** This is correct when
 > the URL redirected to `https://`. The TLS column shows the handshake for the
 > final connection; the redirect itself appears in the `REDIRECT` column.
 >
 > **Note on empty cells:** a dim `n/a` means the phase structurally doesn't
-> apply to this request (e.g. `TLS HANDSHAKE` on plain `http://`, or `REDIRECT`
+> apply to this request (e.g. `TLS_HANDSHAKE` on plain `http://`, or `REDIRECT`
 > when none were followed). A dim `-` means the field is empty for any other
 > reason (e.g. truncated by a failure mid-transfer).
 >
@@ -612,10 +750,10 @@ without it, the columns end at `PROTO` and the rest of the table is unaffected.
 > measured - it has no effect on what you send. Combine it with `-X`/`-d` as
 > usual to test POST/PUT streaming endpoints with a body.
 >
-> **Note on `AVG GAP`/`MAX GAP` excluding the first chunk:** these two columns
+> **Note on `AVG_GAP`/`MAX_GAP` excluding the first chunk:** these two columns
 > intentionally start counting from the _second_ chunk onward. Including the
 > first chunk's arrival would double-count the same span already shown by
-> DNS/TCP/TLS/PRE-TRANSFER/1ST BYTE, which would misreport ordinary connection
+> DNS/TCP/TLS/PRE-TRANSFER/1ST_BYTE, which would misreport ordinary connection
 > setup time as an in-stream stall. With fewer than 2 chunks there's nothing to
 > measure a gap between, so both columns show `n/a`.
 
@@ -670,7 +808,7 @@ Colors are auto-disabled when output is piped to a file or another command.
 | IP address            | Lavender                                                     |
 | Row number            | Dim                                                          |
 | `CHUNKS`              | Primary text (row color)                                     |
-| `AVG GAP` / `MAX GAP` | Same magnitude-based timing colors as other duration columns |
+| `AVG_GAP` / `MAX_GAP` | Same magnitude-based timing colors as other duration columns |
 
 ---
 
