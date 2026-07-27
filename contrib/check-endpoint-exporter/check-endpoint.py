@@ -27,9 +27,19 @@ import socket
 import statistics
 import sys
 import time
-from datetime import UTC, datetime
+from collections import Counter
+from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit
+
+# datetime.UTC is an alias for datetime.timezone.utc that was only added in
+# Python 3.11. Importing it unconditionally makes the whole script fail on 3.9
+# and 3.10 with "ImportError: cannot import name 'UTC' from 'datetime'", so
+# fall back to the older spelling when it is missing.
+try:
+    from datetime import UTC
+except ImportError:  # Python < 3.11
+    UTC = UTC
 
 # Cap how much response body we buffer for --expect-body / --expect-regex
 # checks, so a huge download can't exhaust memory. We only need enough to
@@ -52,8 +62,14 @@ except ImportError:
     sys.exit(1)
 
 
-APP_VERSION = "1.0.0"
+APP_VERSION = "2.0.0"
 DEFAULT_USER_AGENT = f"check-endpoint/{APP_VERSION}"
+
+# Sent on every request unless the caller supplies their own Accept header
+# with -H. This matches what curl(1) sends by default; setting it explicitly
+# means the probe's request looks the same regardless of how libcurl was
+# built or configured.
+DEFAULT_ACCEPT = "*/*"
 
 # CURL_VERSION_HTTP2 feature bit - set when libcurl was built with nghttp2.
 # If this is False, --http2 will be silently ignored by libcurl (it falls
@@ -78,6 +94,13 @@ USER_AGENTS = {
         "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15"
     ),
     "googlebot": "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)",
+    # What the curl(1) command line tool itself sends. Use this when you want
+    # the request to be indistinguishable from a plain `curl` invocation, e.g.
+    # when a WAF or CDN treats unknown agents differently.
+    "curl": "curl/8.8.0",
+    # The previous value of the "curl" alias, kept under its own name so
+    # existing scripts can still reach it.
+    "pycurl": "pycurl/8.8.0",
 }
 
 # ── Catppuccin Mocha theme ────────────────────────────────────────────────────
@@ -243,17 +266,17 @@ def _colorize_code(value: str) -> str:
 
 FIELDS = [
     ["num", "#", 4],
-    ["ip", "IP ADDRESS", 16],
+    ["ip", "IP_ADDRESS", 16],
     ["dns", "DNS", 9],
-    ["tcp", "TCP CONNECT", 13],
-    ["tls", "TLS HANDSHAKE", 15],
+    ["tcp", "TCP_CONNECT", 13],
+    ["tls", "TLS_HANDSHAKE", 15],
     ["pretransfer", "PRE-TRANSFER", 14],
-    ["ttfb", "1ST BYTE", 10],
+    ["ttfb", "1ST_BYTE", 10],
     ["redirect", "REDIRECT", 13],
-    ["download", "BODY DL", 10],
-    ["total", "TOTAL TIME", 12],
-    ["code", "HTTP CODE", 11],
-    ["bytes", "TOTAL BYTES", 13],
+    ["download", "BODY_DL", 10],
+    ["total", "TOTAL_TIME", 12],
+    ["code", "HTTP_CODE", 11],
+    ["bytes", "TOTAL_BYTES", 13],
     ["proto", "PROTO", 7],
 ]
 
@@ -266,8 +289,8 @@ IPV6_IP_WIDTH = 42
 # otherwise, so normal runs are unaffected.
 STREAM_FIELDS = [
     ["chunks", "CHUNKS", 8],
-    ["avggap", "AVG GAP", 10],
-    ["maxgap", "MAX GAP", 10],
+    ["avggap", "AVG_GAP", 10],
+    ["maxgap", "MAX_GAP", 10],
 ]
 STREAM_FIELD_KEYS = [f[0] for f in STREAM_FIELDS]
 
@@ -350,7 +373,9 @@ def human_bytes(n):
 # ── output helpers ────────────────────────────────────────────────────────────
 
 
-def write_cell(text: str, width: int, color: str = "", reset: bool = True) -> None:
+def write_cell(
+    text: str, width: int, color: str = "", reset: bool = True
+) -> None:
     """
     Write a padded cell. Padding is applied to the PLAIN text first so that
     ANSI escape codes don't inflate the visual width. Color wraps the padded
@@ -571,6 +596,38 @@ def field_width(key):
     return 10
 
 
+# ── request headers ───────────────────────────────────────────────────────────
+
+
+def header_field_name(header):
+    """
+    The field name of a curl-style "Key: Value" header, lowercased.
+
+    Splitting on the first colon only, so a value containing colons (a URL in
+    Referer, say) does not confuse the name.
+    """
+    return header.split(":", 1)[0].strip().lower()
+
+
+def build_request_headers(headers):
+    """
+    Return the header list to hand to libcurl, with defaults filled in.
+
+    Adds "Accept: */*" unless an Accept header is already present. The match is
+    on the field name alone, so -H "Accept-Encoding: gzip" and
+    -H "Accept-Language: en" are NOT treated as overriding Accept.
+
+    Passing -H "Accept:" with an empty value is curl's idiom for suppressing a
+    header entirely; that counts as an override too, so the default is not
+    added back underneath it.
+    """
+    headers = list(headers or [])
+    if not any(header_field_name(h) == "accept" for h in headers):
+        # Prepended so explicit -H values still read last in --show-headers.
+        headers.insert(0, f"Accept: {DEFAULT_ACCEPT}")
+    return headers
+
+
 # ── single request ────────────────────────────────────────────────────────────
 
 
@@ -621,7 +678,9 @@ def run_once(
         ip_display = pin_ip
     else:
         hostname, port = url_host_port(url)
-        ip_display = resolve_ip(hostname, port, ip_version) if hostname else None
+        ip_display = (
+            resolve_ip(hostname, port, ip_version) if hostname else None
+        )
 
     if not quiet:
         if ip_display is None:
@@ -684,8 +743,9 @@ def run_once(
         curl.setopt(curl.FRESH_CONNECT, 1)
         curl.setopt(curl.FORBID_REUSE, 1)
 
-    if headers:
-        curl.setopt(curl.HTTPHEADER, headers)
+    # Always set, because build_request_headers() supplies a default Accept
+    # even when the caller passed no -H flags at all.
+    curl.setopt(curl.HTTPHEADER, build_request_headers(headers))
 
     if data is not None:
         curl.setopt(curl.POSTFIELDS, data)
@@ -749,7 +809,9 @@ def run_once(
         "chunks": None,
         "avggap": None,
         "maxgap": None,
-        "headers": parse_response_headers(header_lines) if capture_headers else None,
+        "headers": parse_response_headers(header_lines)
+        if capture_headers
+        else None,
         "body": bytes(body_buf) if capture_body else None,
         "cert": extract_cert_info(curl) if capture_cert else None,
     }
@@ -766,7 +828,8 @@ def run_once(
                 pointer += 1
             while pointer < len(LIVE_FIELD_KEYS):
                 write_empty_cell(
-                    LIVE_FIELD_KEYS[pointer], field_width(LIVE_FIELD_KEYS[pointer])
+                    LIVE_FIELD_KEYS[pointer],
+                    field_width(LIVE_FIELD_KEYS[pointer]),
                 )
                 pointer += 1
             for key in FINAL_FIELD_KEYS:
@@ -808,7 +871,10 @@ def run_once(
         # in-stream stutter. With fewer than 2 chunks there's no inter-chunk
         # gap to measure at all, so it's a genuine "n/a", not just missing.
         if chunk_count >= 2:
-            gaps = [chunk_times[i] - chunk_times[i - 1] for i in range(1, chunk_count)]
+            gaps = [
+                chunk_times[i] - chunk_times[i - 1]
+                for i in range(1, chunk_count)
+            ]
             res["avggap"] = sum(gaps) / len(gaps)
             res["maxgap"] = max(gaps)
             stream_stats["avggap"] = human_time(res["avggap"])
@@ -820,7 +886,9 @@ def run_once(
     if not quiet:
         for key in FINAL_FIELD_KEYS:
             value = (
-                stream_stats[key] if key in stream_stats else get_final_value(curl, key)
+                stream_stats[key]
+                if key in stream_stats
+                else get_final_value(curl, key)
             )
             _write_final_cell(key, value, field_width(key), rcol)
         sys.stdout.write(RESET + "\n")
@@ -884,7 +952,9 @@ def build_pin_resolve(url, pin_value, ip_version):
     if pin_value == "auto":
         family = socket.AF_INET6 if ip_version == "6" else socket.AF_INET
         try:
-            infos = socket.getaddrinfo(hostname, port, family, socket.SOCK_STREAM)
+            infos = socket.getaddrinfo(
+                hostname, port, family, socket.SOCK_STREAM
+            )
         except socket.gaierror as exc:
             sys.stderr.write(f"error: could not resolve {hostname}: {exc}\n")
             sys.exit(1)
@@ -922,7 +992,9 @@ def compute_phase_deltas(curl):
     total = curl.getinfo(pycurl.TOTAL_TIME)
     ttfb_raw = curl.getinfo(pycurl.STARTTRANSFER_TIME)
     out["download"] = (
-        max(total - ttfb_raw, 0.0) if total and ttfb_raw and ttfb_raw > 0 else None
+        max(total - ttfb_raw, 0.0)
+        if total and ttfb_raw and ttfb_raw > 0
+        else None
     )
     out["total"] = total if total and total > 0 else None
     return out
@@ -1015,7 +1087,9 @@ def evaluate_assertions(res, cfg):
         text = (res.get("body") or b"").decode("utf-8", "replace")
         if cfg["expect_body"] is not None and cfg["expect_body"] not in text:
             fails.append(f"body missing substring {cfg['expect_body']!r}")
-        if cfg["expect_regex"] is not None and not cfg["expect_regex"].search(text):
+        if cfg["expect_regex"] is not None and not cfg["expect_regex"].search(
+            text
+        ):
             fails.append(f"body did not match /{cfg['expect_regex'].pattern}/")
     return fails
 
@@ -1055,12 +1129,12 @@ def _percentile(sorted_vals, p):
 
 _SUMMARY_PHASES = [
     ("dns", "DNS"),
-    ("tcp", "TCP CONNECT"),
-    ("tls", "TLS HANDSHAKE"),
+    ("tcp", "TCP_CONNECT"),
+    ("tls", "TLS_HANDSHAKE"),
     ("pretransfer", "PRE-TRANSFER"),
-    ("ttfb", "1ST BYTE"),
-    ("download", "BODY DL"),
-    ("total", "TOTAL TIME"),
+    ("ttfb", "1ST_BYTE"),
+    ("download", "BODY_DL"),
+    ("total", "TOTAL_TIME"),
 ]
 
 
@@ -1104,8 +1178,10 @@ def print_summary(results):
         sys.stdout.write(lbl + "".join(cell(fmt(v)) for v in computed) + "\n")
 
     for key, label in _SUMMARY_PHASES:
-        stat_row(label, [r["phases"].get(key) for r in ok], human_time, _cell_time)
-    stat_row("TOTAL BYTES", [r["bytes"] for r in ok], human_bytes, _cell_bytes)
+        stat_row(
+            label, [r["phases"].get(key) for r in ok], human_time, _cell_time
+        )
+    stat_row("TOTAL_BYTES", [r["bytes"] for r in ok], human_bytes, _cell_bytes)
     sys.stdout.flush()
 
 
@@ -1156,6 +1232,62 @@ def print_tls_info(cert):
     sys.stdout.flush()
 
 
+# Headers that hint at WHICH server / edge / CDN / backend produced the
+# response. Grouped loosely by source. Many are per-request identifiers
+# (cf-ray, x-amz-cf-id, *-request-id): those change every request even from a
+# single backend, so the summary treats "all unique" differently from "varied
+# between a few distinct values" (which is the real which-backend signal).
+SERVER_HINT_HEADERS = [
+    # Generic origin / framework identity
+    "server",
+    "x-powered-by",
+    "x-aspnet-version",
+    "x-aspnetmvc-version",
+    # Proxy / cache chain
+    "via",
+    "x-served-by",
+    "x-cache",
+    "x-cache-hits",
+    "x-cache-status",
+    "age",
+    # Which specific backend / node / pod answered
+    "x-backend",
+    "x-backend-server",
+    "x-server",
+    "x-server-name",
+    "x-host",
+    "x-node",
+    "x-instance",
+    "x-instance-id",
+    "x-upstream",
+    "x-envoy-upstream-service-time",
+    # Per-request / trace IDs (usually unique per request)
+    "x-request-id",
+    "x-amzn-requestid",
+    "x-amzn-trace-id",
+    "x-vcap-request-id",
+    "x-github-request-id",
+    # Cloudflare
+    "cf-ray",
+    "cf-cache-status",
+    "cf-worker",
+    # AWS CloudFront
+    "x-amz-cf-id",
+    "x-amz-cf-pop",
+    # Fastly / Akamai / other CDNs (x-served-by already listed above)
+    "x-timer",
+    "x-fastly-request-id",
+    "akamai-grn",
+    "x-akamai-transformed",
+    # PaaS providers
+    "fly-request-id",
+    "x-render-origin-server",
+    "x-vercel-id",
+    "x-vercel-cache",
+    "x-nf-request-id",  # Netlify
+]
+
+
 _CURATED_HEADERS = [
     "server",
     "content-type",
@@ -1193,7 +1325,9 @@ def print_headers_block(results):
     )
     ok = [r for r in results if not r["failed"] and r.get("headers")]
     if not ok:
-        sys.stdout.write(_col(C_LINENUM) + "  (no headers captured)" + end + "\n")
+        sys.stdout.write(
+            _col(C_LINENUM) + "  (no headers captured)" + end + "\n"
+        )
         sys.stdout.flush()
         return
     h = ok[-1]["headers"]
@@ -1218,7 +1352,192 @@ def print_headers_block(results):
         shown = True
     if not shown:
         sys.stdout.write(
-            _col(C_LINENUM) + "  (none of the common headers were present)" + end + "\n"
+            _col(C_LINENUM)
+            + "  (none of the common headers were present)"
+            + end
+            + "\n"
+        )
+    sys.stdout.flush()
+
+
+# ── request provenance (who served each request) ──────────────────────────────
+#
+# Unlike print_headers_block (which shows only the FINAL response's curated
+# headers), this walks EVERY request and reports the server-identifying headers
+# per run, so across -c N you can see which edge/backend answered each one.
+# It shows:
+#   * one row per successful request: run #, IP, and each header as key=value
+#   * a rollup per header classifying it as:
+#       constant   - same value on every run (e.g. server=cloudflare)
+#       varied     - a few distinct values (the real "different backend" signal,
+#                    e.g. x-cache = HIT×6 / MISS×4)
+#       per-request- a different value every run (trace/request IDs like cf-ray)
+
+
+def _provenance_keys(results, want_hints, user_keys):
+    """Ordered list of header names to display: the server-hint headers that
+    actually showed up (only if --server-hints), followed by any user-requested
+    --capture-header names (always kept, even if absent, so their absence is
+    visible)."""
+    present = set()
+    for r in results:
+        h = r.get("headers")
+        if h:
+            present.update(h.keys())
+    keys = []
+    if want_hints:
+        for k in SERVER_HINT_HEADERS:
+            if k in present and k not in keys:
+                keys.append(k)
+    for k in user_keys:
+        if k not in keys:
+            keys.append(k)
+    return keys
+
+
+# CDN / cache headers whose value is a comma-separated CHAIN of hops, oldest
+# (origin-shield) first, newest (the edge that actually served you) last. BY
+# DEFAULT we report only that final hop, which is the one you care about;
+# pass --full-cdn to show the entire raw chain instead.
+CDN_CHAINED_HEADERS = {
+    "x-served-by",
+    "x-cache",
+    "x-cache-hits",
+    "x-cache-status",
+    "via",
+}
+
+
+def _final_hop(value):
+    """Last segment of a comma-separated hop chain, trimmed."""
+    return value.split(",")[-1].strip()
+
+
+def _hop_count(value):
+    return len([p for p in value.split(",")]) if value else 0
+
+
+def _kv(key, value, missing=False):
+    """Render one key=value token with Catppuccin coloring."""
+    if missing or value is None:
+        return _col(C_LINENUM) + f"{key}=-" + (RESET if USE_COLOR else "")
+    end = RESET if USE_COLOR else ""
+    return _col(_LAVENDER) + key + "=" + end + _col(_SUBTEXT0) + value + end
+
+
+def print_provenance_summary(results, want_hints, user_keys, full_cdn=False):
+    end = RESET if USE_COLOR else ""
+    user_keys = [k.strip().lower() for k in user_keys]
+    title = "REQUEST PROVENANCE (server-identifying headers, per request)"
+    if full_cdn:
+        title += "  [--full-cdn: full hop chain]"
+    sys.stdout.write("\n" + _col(C_HEADER) + title + end + "\n")
+
+    keys = _provenance_keys(results, want_hints, user_keys)
+    ok = [r for r in results if not r["failed"] and r.get("headers")]
+
+    if not keys:
+        sys.stdout.write(
+            _col(C_LINENUM)
+            + "  (no server-identifying headers found in any response)"
+            + end
+            + "\n"
+        )
+        sys.stdout.flush()
+        return
+    if not ok:
+        sys.stdout.write(
+            _col(C_LINENUM)
+            + "  (no headers captured - did every request fail?)"
+            + end
+            + "\n"
+        )
+        sys.stdout.flush()
+        return
+
+    # By DEFAULT chained CDN headers are collapsed to their final hop; only
+    # --full-cdn shows the whole comma-separated chain.
+    def _collapse(k, v):
+        # fmt off
+        return (
+            not full_cdn
+            and k in CDN_CHAINED_HEADERS
+            and v is not None
+            and "," in v
+        )
+        # fmt on
+
+    ip_w = field_width("ip")
+    # Per-request rows.
+    for r in ok:
+        h = r["headers"]
+        toks = []
+        for k in keys:
+            v = h.get(k)
+            if _collapse(k, v):
+                toks.append(_kv(f"{k}(final)", _final_hop(v)))
+            else:
+                toks.append(_kv(k, v))
+        runlbl = _col(C_LINENUM) + f"  {r['run']:<3}" + end
+        iplbl = _col(C_IP) + f"{(r.get('ip') or '-'):<{ip_w}}" + end
+        sys.stdout.write(f"{runlbl} {iplbl}  {'  '.join(toks)}\n")
+
+    # Rollup: classify each header as constant / varied / per-request.
+    sys.stdout.write("\n")
+    n = len(ok)
+    any_collapsed = False
+    for k in keys:
+        raw_vals = [r["headers"].get(k) for r in ok]
+        # By default collapse chained headers to their final hop and note the
+        # chain depth; with --full-cdn use the raw values verbatim.
+        max_hops = max((_hop_count(v) for v in raw_vals if v), default=0)
+        collapse = (not full_cdn) and k in CDN_CHAINED_HEADERS and max_hops > 1
+        if collapse:
+            any_collapsed = True
+            vals = [(_final_hop(v) if v else "-") for v in raw_vals]
+            label_key = f"{k}(final)"
+            suffix = _col(_OVERLAY0) + f"   [{max_hops} hops in chain]" + end
+        else:
+            vals = [(v or "-") for v in raw_vals]
+            label_key = k
+            suffix = ""
+
+        counts = Counter(vals)
+        distinct = len(counts)
+        if distinct == 1:
+            only = next(iter(counts))
+            label = _col(_OVERLAY0) + f"  constant     {label_key}: " + end
+            body = _col(_SUBTEXT0) + only + end
+        elif distinct == n and n > 1:
+            label = _col(_MAUVE) + f"  per-request  {label_key}: " + end
+            body = (
+                _col(_TEXT)
+                + f"{distinct} distinct (unique each run - looks like a request/trace id)"
+                + end
+            )
+        else:
+            label = _col(BOLD + _PEACH) + f"  varied       {label_key}: " + end
+            top = ", ".join(
+                f"{val}×{cnt}" for val, cnt in counts.most_common(6)
+            )
+            more = "" if distinct <= 6 else f", +{distinct - 6} more"
+            body = (
+                _col(_TEXT)
+                + f"{distinct} distinct "
+                + end
+                + _col(_SUBTEXT0)
+                + f"({top}{more})"
+                + end
+            )
+        sys.stdout.write(label + body + suffix + "\n")
+
+    # Let the user know the chain was trimmed and how to see all of it.
+    if any_collapsed:
+        sys.stdout.write(
+            _col(C_LINENUM)
+            + "  (CDN hop chains shown as final hop; pass --full-cdn for the full chain)"
+            + end
+            + "\n"
         )
     sys.stdout.flush()
 
@@ -1270,7 +1589,11 @@ def build_prometheus_text(url, results, cert):
         )
         phase_metrics = [
             ("dns", "check_endpoint_dns_seconds", "DNS lookup time (seconds)"),
-            ("tcp", "check_endpoint_tcp_connect_seconds", "TCP connect time (seconds)"),
+            (
+                "tcp",
+                "check_endpoint_tcp_connect_seconds",
+                "TCP connect time (seconds)",
+            ),
             (
                 "tls",
                 "check_endpoint_tls_handshake_seconds",
@@ -1291,7 +1614,11 @@ def build_prometheus_text(url, results, cert):
                 "check_endpoint_body_download_seconds",
                 "Body download time (seconds)",
             ),
-            ("total", "check_endpoint_total_seconds", "Total request time (seconds)"),
+            (
+                "total",
+                "check_endpoint_total_seconds",
+                "Total request time (seconds)",
+            ),
         ]
         for key, name, help_text in phase_metrics:
             v = last["phases"].get(key)
@@ -1333,16 +1660,18 @@ class _MetricsHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         try:
             results, cert = self.server.probe_fn()
-            body = build_prometheus_text(self.server.probe_url, results, cert).encode(
-                "utf-8"
-            )
+            body = build_prometheus_text(
+                self.server.probe_url, results, cert
+            ).encode("utf-8")
             status = 200
         except Exception as exc:  # never let a scrape crash the server
             body = f"# probe error: {exc}\n".encode()
             status = 500
         try:
             self.send_response(status)
-            self.send_header("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+            self.send_header(
+                "Content-Type", "text/plain; version=0.0.4; charset=utf-8"
+            )
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
@@ -1352,7 +1681,9 @@ class _MetricsHandler(BaseHTTPRequestHandler):
     # HEAD is used by some health checks; answer it without a body.
     def do_HEAD(self):
         self.send_response(200)
-        self.send_header("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+        self.send_header(
+            "Content-Type", "text/plain; version=0.0.4; charset=utf-8"
+        )
         self.end_headers()
 
     def log_message(self, fmt, *args):
@@ -1401,32 +1732,32 @@ def main():
         epilog=f"""\
 FIELDS REPORTED (in column order)
   #              request counter (1-based) across -c N runs
-  IP ADDRESS     resolved IP of the remote host
+  IP_ADDRESS     resolved IP of the remote host
   DNS            time spent on DNS lookup (that phase only)
-  TCP CONNECT    time spent on the TCP handshake (that phase only)
-  TLS HANDSHAKE  time spent on the TLS handshake (blank for plain http://)
+  TCP_CONNECT    time spent on the TCP handshake (that phase only)
+  TLS_HANDSHAKE  time spent on the TLS handshake (blank for plain http://)
   PRE-TRANSFER   time from connect-ready to request-send-ready
-  1ST BYTE       time from request sent to first byte of the response body
+  1ST_BYTE       time from request sent to first byte of the response body
   REDIRECT       redirects followed: count and total time (blank if none).
-                 REDIRECT time is why TOTAL TIME can exceed the sum of other
+                 REDIRECT time is why TOTAL_TIME can exceed the sum of other
                  columns - it accounts for all redirect round-trips.
-  BODY DL        time to receive the full response body after the first byte
-  TOTAL TIME     total end-to-end request time including any redirects
-  HTTP CODE      response status code
-  TOTAL BYTES    size of the response body received
+  BODY_DL        time to receive the full response body after the first byte
+  TOTAL_TIME     total end-to-end request time including any redirects
+  HTTP_CODE      response status code
+  TOTAL_BYTES    size of the response body received
   PROTO          HTTP version actually used: h1 (HTTP/1.1), h1.0 (HTTP/1.0),
                  h2 (HTTP/2), or h3 (HTTP/3)
 
-  Every column except TOTAL TIME is a per-phase delta.
-  DNS + TCP + TLS + PRE-TRANSFER + 1ST BYTE + REDIRECT + BODY DL ≈ TOTAL TIME
+  Every column except TOTAL_TIME is a per-phase delta.
+  DNS + TCP + TLS + PRE-TRANSFER + 1ST_BYTE + REDIRECT + BODY_DL ≈ TOTAL_TIME
 
   With -S/--stream, three extra columns are appended:
   CHUNKS         number of chunks the response body arrived in
-  AVG GAP        average time BETWEEN consecutive chunks (excludes the
+  AVG_GAP        average time BETWEEN consecutive chunks (excludes the
                  first chunk's arrival - that span is already the DNS +
-                 TCP + TLS + PRE-TRANSFER + 1ST BYTE columns, so counting
+                 TCP + TLS + PRE-TRANSFER + 1ST_BYTE columns, so counting
                  it again here would double as fake in-stream stutter)
-  MAX GAP        longest of those inter-chunk gaps
+  MAX_GAP        longest of those inter-chunk gaps
   These only appear with -S; a normal run's columns are unaffected. With
   fewer than 2 chunks there's no inter-chunk gap to measure, so both show
   n/a rather than a number.
@@ -1496,6 +1827,18 @@ USER-AGENT ALIASES (-a/--user-agent)
     edge       Microsoft Edge on Windows 10/11
     safari     Safari on macOS
     googlebot  Googlebot crawler UA
+    curl       curl/8.8.0, what the curl(1) command line tool sends
+    pycurl     pycurl/8.8.0
+
+DEFAULT REQUEST HEADERS
+  Every request carries 'Accept: */*' unless you supply your own Accept
+  header with -H, which replaces it:
+
+    -H "Accept: application/json"     send that instead
+    -H "Accept:"                      send no Accept header at all
+
+  Accept-Encoding and Accept-Language are separate headers and do not
+  replace the default Accept.
 
 WHAT IT CAN FIND
 
@@ -1627,6 +1970,39 @@ ANALYSIS, CHECKS, AND EXPORT
     caching headers, and so on) from the final response, plus a detected
     cache HIT/MISS verdict.
 
+  --server-hints
+    After the run, print a PER-REQUEST summary of the headers that hint at
+    which server / edge / CDN / backend produced each response (server, via,
+    x-served-by, x-cache, cf-ray, cf-cache-status, x-amz-cf-pop, x-backend,
+    x-envoy-upstream-service-time, fly-request-id, x-vercel-id, and more).
+    Each successful run gets a row (# + IP + key=value headers), followed by a
+    rollup that classifies every header as:
+      constant     same value every run   (e.g. server=cloudflare)
+      varied       a few distinct values  (the real which-backend signal,
+                   e.g. x-cache = HIT×6 / MISS×4, or two x-amz-cf-pop codes)
+      per-request  a different value each run (request/trace ids like cf-ray)
+    Combine with -c N (and optionally -F to avoid connection reuse) to reveal
+    load-balancer rotation and CDN PoP selection.
+
+  --capture-header NAME   (repeatable)
+    Also track one or more specific response headers by name and show their
+    value per request in the same end-of-run summary. Missing values render as
+    "-", so you can confirm whether an expected header is present at all and
+    whether it changes between backends. Works with or without --server-hints.
+
+  --full-cdn
+    Some CDN/cache headers are a comma-separated CHAIN of hops (Fastly/Varnish
+    x-served-by, x-cache, x-cache-hits, via), oldest shield first and the edge
+    that actually served you last. BY DEFAULT the provenance summary collapses
+    those to just the final hop and appends "[N hops in chain]", so
+      x-served-by = cache-iad-...-IAD, cache-iad-...-IAD, cache-pao-kpao1770024-PAO
+    reads as
+      x-served-by(final) = cache-pao-kpao1770024-PAO   [4 hops in chain]
+    and x-cache "MISS, HIT, HIT" collapses to the edge verdict "HIT". Pass
+    --full-cdn to show the entire raw chain instead. Only the known chained
+    headers are collapsed by default; every other header is shown verbatim
+    either way.
+
   --prometheus  (with --prometheus-port, --prometheus-bind)
     Run as a Prometheus exporter daemon instead of printing the table:
     serve metrics over HTTP (default port 9109, all interfaces) and re-probe
@@ -1690,6 +2066,19 @@ EXAMPLES
   Show response headers and cache status:
       ./check-endpoint.py --show-headers https://example.com
 
+  See which backend/edge served each of 10 requests (CDN chains collapse to
+  the final serving edge/PoP by default):
+      ./check-endpoint.py -c 10 --server-hints https://example.com
+
+  Same, but show the FULL multi-hop CDN chain instead of just the final hop:
+      ./check-endpoint.py -c 10 --server-hints --full-cdn https://example.com
+
+  Track a specific header per request (repeatable), e.g. a backend id:
+      ./check-endpoint.py -c 10 --capture-header x-backend --capture-header x-pod https://example.com
+
+  Force fresh connections so every run can land on a different backend:
+      ./check-endpoint.py -c 10 -F --server-hints https://example.com
+
   Run a Prometheus exporter that re-probes on every scrape:
       ./check-endpoint.py --prometheus --prometheus-port 9109 https://example.com
       # then: curl localhost:9109   (Prometheus scrapes the same endpoint)
@@ -1737,7 +2126,10 @@ NOTE ON -p/-P (IP pinning)
 
     ip_group = parser.add_mutually_exclusive_group()
     ip_group.add_argument(
-        "-4", "--ipv4", action="store_true", help="force IPv4 resolution (default)"
+        "-4",
+        "--ipv4",
+        action="store_true",
+        help="force IPv4 resolution (default)",
     )
     ip_group.add_argument(
         "-6", "--ipv6", action="store_true", help="force IPv6 resolution"
@@ -1782,7 +2174,11 @@ NOTE ON -p/-P (IP pinning)
         default=[],
         dest="headers",
         metavar="'Key: Value'",
-        help="custom request header, curl-style (repeatable)",
+        help=(
+            "custom request header, curl-style (repeatable). "
+            f"An Accept header here replaces the default '{DEFAULT_ACCEPT}'; "
+            'use -H "Accept:" to send none at all'
+        ),
     )
     parser.add_argument(
         "-d",
@@ -1848,6 +2244,35 @@ NOTE ON -p/-P (IP pinning)
         action="store_true",
         help="after the run, print selected response headers and detected "
         "cache HIT/MISS",
+    )
+    out_group.add_argument(
+        "--server-hints",
+        dest="server_hints",
+        action="store_true",
+        help="after the run, print a per-request summary of server/edge/CDN "
+        "identifying headers (server, via, x-served-by, cf-ray, x-cache, "
+        "x-backend, x-amz-cf-pop, ...), flagging which values are constant, "
+        "which vary across -c N runs (the real 'which backend served it' "
+        "signal), and which are unique per request",
+    )
+    out_group.add_argument(
+        "--capture-header",
+        dest="capture_header_names",
+        action="append",
+        default=[],
+        metavar="NAME",
+        help="capture a specific response header by name and show its value "
+        "per request in the end-of-run provenance summary (repeatable)",
+    )
+    out_group.add_argument(
+        "--full-cdn",
+        dest="full_cdn",
+        action="store_true",
+        help="in the provenance summary, show the FULL comma-chained CDN/cache "
+        "headers (x-served-by, x-cache, x-cache-hits, via). By default these "
+        "are collapsed to just their final hop - the edge/PoP that actually "
+        "served the request - with the chain depth noted; pass this flag to "
+        "see every hop in the chain",
     )
     out_group.add_argument(
         "--prometheus",
@@ -2047,7 +2472,13 @@ NOTE ON -p/-P (IP pinning)
     )
 
     capture_body = args.expect_body is not None or expect_regex is not None
-    capture_headers = args.show_headers
+    # Headers must be captured for --show-headers, --server-hints, or any
+    # --capture-header NAME. Any one of them turns on the per-response capture.
+    capture_headers = (
+        args.show_headers
+        or args.server_hints
+        or bool(args.capture_header_names)
+    )
     capture_cert = args.tls_info
 
     def run_probe_cycle(quiet, want_cert):
@@ -2098,6 +2529,10 @@ NOTE ON -p/-P (IP pinning)
         print_tls_info(cert)
     if args.show_headers:
         print_headers_block(results)
+    if args.server_hints or args.capture_header_names:
+        print_provenance_summary(
+            results, args.server_hints, args.capture_header_names, args.full_cdn
+        )
     if assert_cfg is not None:
         end = RESET if USE_COLOR else ""
         failed_runs = [r for r in results if r["_assert_fails"]]
@@ -2120,7 +2555,9 @@ NOTE ON -p/-P (IP pinning)
             )
             for r in failed_runs:
                 prefix = _col(_MAROON) + f"  run {r['run']}:" + end
-                colored = "; ".join(_colorize_reason(x) for x in r["_assert_fails"])
+                colored = "; ".join(
+                    _colorize_reason(x) for x in r["_assert_fails"]
+                )
                 sys.stdout.write(f"{prefix} {colored}\n")
         sys.stdout.flush()
 

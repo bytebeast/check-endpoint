@@ -1,0 +1,38 @@
+# .github/workflows/sync-check.yml
+#
+# Fails the build when the exporter's copy of check-endpoint.py drifts from the
+# one at the repo root. No Python, no dependencies, just diff.
+ 
+name: sync-check
+ 
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+ 
+jobs:
+  contrib-copy:
+    name: contrib copy is in sync
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+ 
+      - name: Compare contrib copy against the root copy
+        run: |
+          root="check-endpoint.py"
+          copy="contrib/check-endpoint-exporter/check-endpoint.py"
+ 
+          for f in "$root" "$copy"; do
+            if [ ! -f "$f" ]; then
+              echo "::error::expected $f to exist"
+              exit 1
+            fi
+          done
+ 
+          if diff -u "$root" "$copy"; then
+            echo "$copy matches $root"
+          else
+            echo "::error file=$copy::This copy has drifted from $root. Sync it with: cp $root $copy"
+            exit 1
+          fi
