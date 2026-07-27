@@ -1,0 +1,105 @@
+# .github/workflows/python-security.yml
+#
+# Security checks for the Python side. All open source:
+#
+#   ruff (S rules)  static analysis, a port of Bandit   (MIT)
+#   pip-audit       known CVEs in dependencies, by PyPA (Apache-2.0)
+#   gitleaks        committed secrets                   (MIT)
+#   zizmor          GitHub Actions workflow auditing    (MIT/Apache-2.0)
+#
+# Bandit itself is not run separately. Ruff's S ruleset is a port of it and
+# produced the same findings on this codebase, so running both only doubles
+# the noise.
+ 
+name: python-security
+ 
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # Dependency advisories appear after you merge, so re-run weekly rather
+    # than only on change. Monday 07:00 UTC.
+    - cron: "0 7 * * 1"
+  workflow_dispatch:
+ 
+permissions:
+  contents: read
+ 
+jobs:
+  sast:
+    name: Static analysis (ruff S rules)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+ 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+ 
+      - run: pip install ruff
+ 
+      # Reads select/ignore from pyproject.toml. Add "S" to the select list
+      # there rather than passing --select here, so a local `ruff check`
+      # gives you the same answer as CI.
+      - name: ruff check
+        run: ruff check --output-format github .
+ 
+  dependencies:
+    name: Dependency CVEs (pip-audit)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+ 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+ 
+      - run: pip install pip-audit
+ 
+      # pycurl builds against libcurl, so the headers have to be present
+      # before pip-audit can resolve it.
+      - name: Install build headers for pycurl
+        run: sudo apt-get update && sudo apt-get install -y libcurl4-openssl-dev
+ 
+      - name: pip-audit
+        run: pip-audit --requirement requirements.txt --strict --desc
+ 
+  secrets:
+    name: Secret scanning (gitleaks)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history so the scan covers every commit, not just the tip.
+          fetch-depth: 0
+          persist-credentials: false
+ 
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+ 
+  workflows:
+    name: Workflow auditing (zizmor)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+ 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+ 
+      - run: pip install zizmor
+ 
+      # Audits the workflow files themselves for script injection, excessive
+      # permissions, credential persistence and unpinned actions. Worth having
+      # now that the repo has several workflows with write permissions.
+      - name: zizmor
+        run: zizmor --persona regular --format github .github/workflows/
+
