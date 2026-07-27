@@ -35,8 +35,29 @@ extend-exclude = ["contrib/check-endpoint-exporter/check-endpoint.py"]
 # E4/E7/E9 rather than the whole E group: keeps the real pycodestyle errors
 # but drops E501 line-length warnings, which are unfixable noise on comment
 # lines because the formatter does not rewrap comments.
-select = ["E4", "E7", "E9", "F", "W", "I", "UP", "B"]
-ignore = []
+# "S" is flake8-bandit, a port of Bandit. Running it here means the security
+# job needs no extra tool, and a local `ruff check` tells you the same thing
+# CI will.
+select = ["E4", "E7", "E9", "F", "W", "I", "UP", "B", "S"]
+
+ignore = [
+  # S110 try-except-pass. The probe deliberately swallows failures around
+  # optional libcurl features (CERTINFO, header decoding, HTTP version
+  # lookup) because none of them should abort a measurement. Rewriting
+  # these as contextlib.suppress(Exception) would silence the rule properly
+  # and read better, if you ever want to.
+  "S110",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# S104 flags `shown = bind or "0.0.0.0"`, which is the string printed in the
+# startup banner, not an actual bind address.
+# S608 flags the argparse epilog as a SQL injection vector. It is help text.
+"check-endpoint.py" = ["S104", "S608"]
+
+# S603 flags every subprocess call that is not shell=True. The arguments are
+# hardcoded git invocations from this file, with no user input reaching them.
+"scripts/release.py" = ["S603"]
 
 [tool.ruff.format]
 quote-style = "double"

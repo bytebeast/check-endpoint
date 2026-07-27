@@ -1,0 +1,41 @@
+# Repo root: zizmor.yml
+# (.github/zizmor.yml also works; zizmor discovers either without -c.)
+#
+# The only rule that needs configuring is unpinned-uses. Out of the box zizmor
+# applies a blanket hash-pin policy, so every `uses: someone/action@v4` is a
+# High-severity error and the job exits non-zero.
+#
+# The policy below draws the line where the risk actually is. A git tag is
+# mutable: whoever controls the repository can repoint v4 at different code,
+# and your next CI run executes it. A commit hash cannot be repointed.
+#
+#   ref-pin   a tag or branch is acceptable
+#   hash-pin  a full 40-character commit SHA is required
+#   any       no requirement at all
+#
+# GitHub's own actions are allowed by tag because you are already trusting
+# GitHub to run the job at all; pinning actions/checkout to a hash defends
+# against nothing that GitHub could not do anyway. Everything else is a
+# third party and gets hash-pinned.
+ 
+rules:
+  unpinned-uses:
+    config:
+      policies:
+        actions/*: ref-pin
+        github/*: ref-pin
+ 
+        # TEMPORARY. gitleaks is a third party and should be hash-pinned like
+        # the rest. This line exists only so CI is not blocked while you get
+        # the real SHA:
+        #
+        #   gh api repos/gitleaks/gitleaks-action/commits/v2 --jq .sha
+        #
+        # then in python-security.yml write
+        #   uses: gitleaks/gitleaks-action@<sha>  # v2
+        # and delete this line. `pipx install pinact && pinact run` does the
+        # same for every action in one pass.
+        gitleaks/*: ref-pin
+ 
+        # Everything not listed above.
+        "*": hash-pin

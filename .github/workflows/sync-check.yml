@@ -1,3 +1,4 @@
+
 # .github/workflows/sync-check.yml
 #
 # Fails the build when the exporter's copy of check-endpoint.py drifts from the
@@ -11,12 +12,22 @@ on:
   pull_request:
   workflow_dispatch:
  
+# Without this block the job inherits the repository default, which may be
+# read/write. This workflow only reads files.
+permissions:
+  contents: read
+ 
 jobs:
   contrib-copy:
     name: contrib copy is in sync
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # checkout leaves the job token in .git/config by default, where it
+          # can be picked up by anything that later archives the workspace.
+          # Nothing here needs to push.
+          persist-credentials: false
  
       - name: Compare contrib copy against the root copy
         run: |
