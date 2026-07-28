@@ -3,7 +3,7 @@
 # kube-linter's default check set is deliberately opinionated. These are the
 # ones worth enforcing on a small single-Deployment exporter; the rest mostly
 # apply to stateful production workloads.
-
+ 
 checks:
   addAllBuiltIn: false
   include:
@@ -19,7 +19,7 @@ checks:
     - sensitive-host-mounts
     - ssh-port
     - unsafe-sysctls
-
+ 
     # --- correctness ---
     - dangling-service
     - mismatching-selector
@@ -27,20 +27,30 @@ checks:
     - duplicate-env-var
     - invalid-target-ports
     - env-var-secret
-
+ 
     # --- reliability ---
     - unset-cpu-requirements
     - unset-memory-requirements
     - no-liveness-probe
     - no-readiness-probe
     - latest-tag
-
-    # --- hygiene ---
-    - required-label-owner
-    - use-namespace
-
+ 
   exclude:
     # The exporter is a single stateless replica behind a Service; a
     # PodDisruptionBudget and anti-affinity rules would be noise here.
     - minimum-three-replicas
     - no-anti-affinity
+ 
+    # Deliberately NOT enabled, having seen them fire:
+    #
+    # use-namespace
+    #   Fired on every object in both the chart and the raw manifests. A Helm
+    #   chart takes its namespace from `helm install -n`, and raw manifests
+    #   from `kubectl apply -n`, so hardcoding one into the templates would be
+    #   worse practice than leaving it out. This check suits a repo that
+    #   deploys to a fixed namespace, which is not this one.
+    #
+    # required-label-owner
+    #   Wants an `owner=<any>` label on every workload. That is an
+    #   organisational convention rather than a defect, and it does not belong
+    #   in a chart other people are meant to copy.
