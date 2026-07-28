@@ -1,0 +1,75 @@
+# .github/workflows/release.yml
+#
+# On every push to main, work out whether the commits since the last tag
+# warrant a release. If they do, bump the version in check-endpoint.py and
+# pyproject.toml, prepend a CHANGELOG entry, commit, and push a v* tag.
+#
+# Needs scripts/release.py in the repo.
+ 
+name: release
+ 
+on:
+  push:
+    branches: [main]
+ 
+permissions:
+  contents: write
+ 
+concurrency:
+  group: release
+  cancel-in-progress: false
+ 
+jobs:
+  release:
+    # Do not react to the workflow's own release commit.
+    if: "!startsWith(github.event.head_commit.message, 'chore(release):')"
+    runs-on: ubuntu-latest
+ 
+    steps:
+      # persist-credentials stays on, unlike every other workflow here: the
+      # last step pushes a commit and a tag, and it needs the token that
+      # checkout leaves in .git/config to do it. zizmor flags that as
+      # artipacked, so the finding is suppressed on this line specifically
+      # rather than switching the audit off repo-wide.
+      - uses: actions/checkout@v4 # zizmor: ignore[artipacked]
+        with:
+          # Tags and full history are required to find the last release and
+          # list the commits since it. The default shallow clone has neither.
+          fetch-depth: 0
+ 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+ 
+      - name: Work out the next version
+        id: bump
+        run: |
+          set +e
+          python3 scripts/release.py
+          rc=$?
+          set -e
+          if [ "$rc" -eq 2 ]; then
+            echo "release=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          [ "$rc" -eq 0 ] || exit "$rc"
+          echo "release=true" >> "$GITHUB_OUTPUT"
+ 
+      - name: Commit, tag and push
+        if: steps.bump.outputs.release == 'true'
+        env:
+          VERSION: ${{ steps.bump.outputs.version }}
+          TAG: ${{ steps.bump.outputs.tag }}
+          FILES: ${{ steps.bump.outputs.files }}
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+ 
+          git add -- $FILES
+          git commit -m "chore(release): $TAG [skip ci]"
+          git tag -a "$TAG" -m "$TAG"
+ 
+          git push origin HEAD:main
+          git push origin "$TAG"
+ 
+          echo "released $TAG" >> "$GITHUB_STEP_SUMMARY"
