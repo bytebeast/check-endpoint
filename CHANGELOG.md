@@ -1,5 +1,16 @@
 # Changelog
 
+## v2.2.0 (2026-07-28)
+
+### Features
+
+- **contrib workflow**: add contrib checks workflow (AH-2026072726942)
+- **contrib checks workflow**: aquasecurity/trivy-action@0.28.0 → @v0.36.0 (the old ref didn't exist) Added persist-credentials: false to all 6 checkouts (AH-2026072729950)
+
+### Bug Fixes
+
+- **version pinning**: commit hash pinning for actions, and version pinning for image (AH-2026072735164)
+
 ## v2.1.0 (2026-07-28)
 
 ### Features
