@@ -1,0 +1,222 @@
+# .github/workflows/contrib-checks.yml
+#
+# Lint, validate and security-scan the container and Kubernetes assets under
+# contrib/check-endpoint-exporter. Every tool here is open source:
+#
+#   hadolint     Dockerfile linter                    (GPL-3.0)
+#   yamllint     YAML style and syntax                (GPL-3.0)
+#   docker       `compose config` schema validation   (Apache-2.0)
+#   helm         chart linting and rendering          (Apache-2.0)
+#   kubeconform  manifest schema validation           (Apache-2.0)
+#   kube-linter  Kubernetes best practice / security  (Apache-2.0)
+#   trivy        misconfiguration scanning            (Apache-2.0)
+#
+# Jobs run in parallel and are independent, so one failure still lets you see
+# every other result in the same run.
+
+name: contrib-checks
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "contrib/check-endpoint-exporter/**"
+      - ".github/workflows/contrib-checks.yml"
+      - ".hadolint.yaml"
+      - ".yamllint.yaml"
+  pull_request:
+    paths:
+      - "contrib/check-endpoint-exporter/**"
+      - ".github/workflows/contrib-checks.yml"
+      - ".hadolint.yaml"
+      - ".yamllint.yaml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  BASE: contrib/check-endpoint-exporter
+  CHART: contrib/check-endpoint-exporter/helm/check-endpoint-exporter
+  MANIFESTS: contrib/check-endpoint-exporter/kubernetes
+
+  # Base URL for the CRDs-catalog JSON schemas. Kept short so the
+  # -schema-location lines below stay inside the yamllint line limit. The
+  # {{.Group}} placeholders are kubeconform's own templating; GitHub Actions
+  # only expands ${{ }}, and bash leaves single braces alone, so neither
+  # touches them.
+  CRD: https://raw.githubusercontent.com/datreeio/CRDs-catalog/main
+
+jobs:
+  # ── Dockerfile ────────────────────────────────────────────────────────────
+  dockerfile:
+    name: Dockerfile (hadolint)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: hadolint
+        uses: hadolint/hadolint-action@54c9adbab1582c2ef04b2016b760714a4bfde3cf # v3.1.0
+        with:
+          dockerfile: contrib/check-endpoint-exporter/Dockerfile
+          config: .hadolint.yaml
+          failure-threshold: warning
+
+  # ── docker-compose ────────────────────────────────────────────────────────
+  compose:
+    name: docker-compose (config validate)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      # `compose config` parses the file, resolves the build context and
+      # interpolates variables, so it catches schema errors, bad keys and
+      # unresolvable paths. The runner ships with Docker, nothing to install.
+      - name: Validate compose schema
+        working-directory: contrib/check-endpoint-exporter
+        run: docker compose -f docker-compose.yml config --quiet
+
+      - name: Show the resolved config
+        working-directory: contrib/check-endpoint-exporter
+        run: docker compose -f docker-compose.yml config
+
+  # ── YAML style ────────────────────────────────────────────────────────────
+  yaml:
+    name: YAML (yamllint)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: pip install yamllint
+
+      # Helm templates are Go templates, not YAML, so they are excluded in
+      # .yamllint.yaml. They get validated in the helm job instead, after
+      # rendering.
+      - name: yamllint
+        run: yamllint --strict -c .yamllint.yaml contrib/check-endpoint-exporter
+
+  # ── Helm chart ────────────────────────────────────────────────────────────
+  helm:
+    name: Helm chart (lint, render, validate)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4
+        with:
+          version: v3.16.3
+
+      - name: helm lint
+        run: helm lint "$CHART"
+
+      # Render with default values, and again with everything switched on, so
+      # conditional templates such as the ServiceMonitor are actually exercised.
+      - name: helm template
+        run: |
+          mkdir -p /tmp/rendered
+          helm template ce "$CHART" > /tmp/rendered/default.yaml
+          helm template ce "$CHART" \
+            --set serviceMonitor.enabled=true \
+            > /tmp/rendered/all.yaml
+          wc -l /tmp/rendered/*.yaml
+
+      - name: Install kubeconform
+        run: |
+          curl -sSLo /tmp/kubeconform.tar.gz \
+            https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz
+          tar -xzf /tmp/kubeconform.tar.gz -C /tmp kubeconform
+          sudo install /tmp/kubeconform /usr/local/bin/
+
+      # The chart ships a ServiceMonitor (monitoring.coreos.com/v1), which is a
+      # CRD and has no schema in the upstream Kubernetes JSON schema set. The
+      # CRDs-catalog schema location supplies it; without that second
+      # -schema-location, this step fails with "could not find schema".
+      - name: kubeconform on rendered output
+        run: |
+          kubeconform \
+            -strict \
+            -summary \
+            -kubernetes-version 1.29.0 \
+            -schema-location default \
+            -schema-location "$CRD/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json" \
+            /tmp/rendered/all.yaml
+
+      - name: kube-linter on rendered output
+        uses: stackrox/kube-linter-action@87802a2f4e01abebb3ee3c67a3002fea71f6eae5 # v1
+        with:
+          directory: /tmp/rendered
+          config: .kube-linter.yaml
+
+  # ── Raw Kubernetes manifests ──────────────────────────────────────────────
+  kubernetes:
+    name: Kubernetes manifests (kubeconform, kube-linter)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install kubeconform
+        run: |
+          curl -sSLo /tmp/kubeconform.tar.gz \
+            https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz
+          tar -xzf /tmp/kubeconform.tar.gz -C /tmp kubeconform
+          sudo install /tmp/kubeconform /usr/local/bin/
+
+      - name: kubeconform
+        run: |
+          kubeconform \
+            -strict \
+            -summary \
+            -kubernetes-version 1.29.0 \
+            -schema-location default \
+            -schema-location "$CRD/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json" \
+            "$MANIFESTS"
+
+      - name: kube-linter
+        uses: stackrox/kube-linter-action@87802a2f4e01abebb3ee3c67a3002fea71f6eae5 # v1
+        with:
+          directory: contrib/check-endpoint-exporter/kubernetes
+          config: .kube-linter.yaml
+
+  # ── Security / misconfiguration ───────────────────────────────────────────
+  security:
+    name: Security scan (trivy config)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      # One pass covers the Dockerfile, the Kubernetes manifests and the Helm
+      # chart; trivy understands all three formats natively.
+      - name: trivy config
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: config
+          scan-ref: contrib/check-endpoint-exporter
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+          hide-progress: false
+
+      # Informational: everything trivy found, including LOW and MEDIUM, so a
+      # failing run above still shows you the full picture.
+      - name: trivy config (all severities, informational)
+        if: always()
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: config
+          scan-ref: contrib/check-endpoint-exporter
+          exit-code: "0"
