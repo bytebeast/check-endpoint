@@ -58,7 +58,7 @@ jobs:
           persist-credentials: false
 
       - name: hadolint
-        uses: hadolint/hadolint-action@v3.1.0
+        uses: hadolint/hadolint-action@54c9adbab1582c2ef04b2016b760714a4bfde3cf # v3.1.0
         with:
           dockerfile: contrib/check-endpoint-exporter/Dockerfile
           config: .hadolint.yaml
@@ -114,7 +114,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: azure/setup-helm@v4
+      - uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4
         with:
           version: v3.16.3
 
@@ -154,7 +154,7 @@ jobs:
             /tmp/rendered/all.yaml
 
       - name: kube-linter on rendered output
-        uses: stackrox/kube-linter-action@v1
+        uses: stackrox/kube-linter-action@87802a2f4e01abebb3ee3c67a3002fea71f6eae5 # v1
         with:
           directory: /tmp/rendered
           config: .kube-linter.yaml
@@ -186,7 +186,7 @@ jobs:
             "$MANIFESTS"
 
       - name: kube-linter
-        uses: stackrox/kube-linter-action@v1
+        uses: stackrox/kube-linter-action@87802a2f4e01abebb3ee3c67a3002fea71f6eae5 # v1
         with:
           directory: contrib/check-endpoint-exporter/kubernetes
           config: .kube-linter.yaml
@@ -203,7 +203,7 @@ jobs:
       # One pass covers the Dockerfile, the Kubernetes manifests and the Helm
       # chart; trivy understands all three formats natively.
       - name: trivy config
-        uses: aquasecurity/trivy-action@v0.36.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           scan-type: config
           scan-ref: contrib/check-endpoint-exporter
@@ -215,7 +215,7 @@ jobs:
       # failing run above still shows you the full picture.
       - name: trivy config (all severities, informational)
         if: always()
-        uses: aquasecurity/trivy-action@v0.36.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           scan-type: config
           scan-ref: contrib/check-endpoint-exporter
