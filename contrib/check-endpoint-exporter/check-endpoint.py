@@ -62,7 +62,7 @@ except ImportError:
     sys.exit(1)
 
 
-APP_VERSION = "2.0.0"
+APP_VERSION = "2.1.0"
 DEFAULT_USER_AGENT = f"check-endpoint/{APP_VERSION}"
 
 # Sent on every request unless the caller supplies their own Accept header
