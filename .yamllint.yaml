@@ -1,0 +1,35 @@
+# Repo root: .yamllint.yaml
+
+extends: default
+
+ignore: |
+  # Helm templates are Go templates, not YAML. Running yamllint over
+  # `{{- if .Values.x }}` produces nothing but noise. They are validated in
+  # the helm job instead, after `helm template` renders them into real YAML.
+  contrib/check-endpoint-exporter/helm/*/templates/
+  # Rendered output, if you ever commit any.
+  **/rendered/
+
+rules:
+  # 80 is the yamllint default and too tight for Kubernetes manifests, where
+  # image references and annotations routinely run long.
+  line-length:
+    max: 120
+    level: warning
+
+  # Kubernetes and Helm files conventionally start with ---, but plenty do
+  # not, and it is not worth failing a build over.
+  document-start: disable
+
+  # `on:` in a GitHub workflow is parsed as the boolean true by YAML 1.1.
+  # Without this, yamllint reports every workflow file as an error.
+  truthy:
+    allowed-values: ["true", "false", "on", "off"]
+    check-keys: false
+
+  # Comments sitting flush against the preceding content are common in these
+  # files and read fine.
+  comments:
+    min-spaces-from-content: 1
+
+  comments-indentation: disable

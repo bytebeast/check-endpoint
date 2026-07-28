@@ -1,0 +1,46 @@
+# Repo root: .kube-linter.yaml
+#
+# kube-linter's default check set is deliberately opinionated. These are the
+# ones worth enforcing on a small single-Deployment exporter; the rest mostly
+# apply to stateful production workloads.
+
+checks:
+  addAllBuiltIn: false
+  include:
+    # --- security ---
+    - run-as-non-root
+    - privileged-container
+    - privilege-escalation-container
+    - no-read-only-root-fs
+    - drop-net-raw-capability
+    - host-network
+    - host-pid
+    - host-ipc
+    - sensitive-host-mounts
+    - ssh-port
+    - unsafe-sysctls
+
+    # --- correctness ---
+    - dangling-service
+    - mismatching-selector
+    - non-existent-service-account
+    - duplicate-env-var
+    - invalid-target-ports
+    - env-var-secret
+
+    # --- reliability ---
+    - unset-cpu-requirements
+    - unset-memory-requirements
+    - no-liveness-probe
+    - no-readiness-probe
+    - latest-tag
+
+    # --- hygiene ---
+    - required-label-owner
+    - use-namespace
+
+  exclude:
+    # The exporter is a single stateless replica behind a Service; a
+    # PodDisruptionBudget and anti-affinity rules would be noise here.
+    - minimum-three-replicas
+    - no-anti-affinity

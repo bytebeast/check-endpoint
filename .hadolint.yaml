@@ -1,0 +1,26 @@
+# Repo root: .hadolint.yaml
+#
+# Two rules are switched off deliberately. Both fire on the exporter
+# Dockerfile as written, and both are judgement calls rather than defects.
+# Delete either line if you decide you want the stricter behaviour.
+
+ignored:
+  # DL3008 "Pin versions in apt-get install".
+  # The Dockerfile installs build-essential, libcurl4-openssl-dev, libssl-dev
+  # and libcurl4 from Debian. Pinning those to exact versions breaks the build
+  # the moment the base image moves to a new point release, which is more
+  # often than you would want to be editing this file. python:3.12-slim pins
+  # the distro, which is the reproducibility that actually matters here.
+  - DL3008
+
+  # DL3013 "Pin versions in pip install".
+  # pycurl is compiled against whatever libcurl the base image ships. Pinning
+  # the pycurl version without also pinning libcurl buys very little, and the
+  # wheel is built from source in the builder stage regardless.
+  - DL3013
+
+failure-threshold: warning
+
+# Trusted base image registries. Anything outside this list is flagged.
+trustedRegistries:
+  - docker.io
