@@ -1,40 +1,82 @@
 # .github/workflows/release.yml
 #
-# On every push to main, work out whether the commits since the last tag
-# warrant a release. If they do, bump the version in check-endpoint.py and
-# pyproject.toml, prepend a CHANGELOG entry, commit, and push a v* tag.
+# Release flow, in two halves, because main is protected by a ruleset that
+# requires pull requests and code scanning results. A direct push can never
+# satisfy the code scanning rule: CodeQL only analyses a commit once it is on
+# the remote, and the push is rejected before that can happen.
 #
-# Needs scripts/release.py in the repo.
+#   prepare  opens a release PR with the version bump and CHANGELOG entry
+#   tag      after that PR merges, tags the resulting commit
+#
+# The two jobs run on the same event. `prepare` depends on `tag` so that on
+# the push that lands a release, the tag exists before `prepare` looks for
+# releasable commits. Without that ordering the two race, and `prepare` would
+# compute the same version a second time and open a duplicate PR.
+#
+# Needs scripts/release.py. No third-party actions; `gh` is preinstalled.
  
 name: release
  
 on:
   push:
     branches: [main]
+  workflow_dispatch:
  
-permissions:
-  contents: write
+permissions: {}
  
 concurrency:
   group: release
   cancel-in-progress: false
  
 jobs:
-  release:
-    # Do not react to the workflow's own release commit.
-    if: "!startsWith(github.event.head_commit.message, 'chore(release):')"
+  # ── tag whatever version is currently committed ───────────────────────────
+  tag:
+    name: Tag the released version
     runs-on: ubuntu-latest
- 
+    permissions:
+      contents: write
     steps:
-      # persist-credentials stays on, unlike every other workflow here: the
-      # last step pushes a commit and a tag, and it needs the token that
-      # checkout leaves in .git/config to do it. zizmor flags that as
-      # artipacked, so the finding is suppressed on this line specifically
-      # rather than switching the audit off repo-wide.
+      # persist-credentials stays on: this job pushes a tag.
       - uses: actions/checkout@v4 # zizmor: ignore[artipacked]
         with:
-          # Tags and full history are required to find the last release and
-          # list the commits since it. The default shallow clone has neither.
+          fetch-depth: 0
+ 
+      # Detection is by tag existence, not by commit message. The subject of a
+      # merged release PR depends on whether you squash, rebase or merge, so
+      # matching on "chore(release):" would work for two of the three and fail
+      # silently for the third.
+      - name: Tag if the committed version has none
+        run: |
+          version=$(sed -n 's/^APP_VERSION *= *"\(.*\)"/\1/p' check-endpoint.py)
+          if [ -z "$version" ]; then
+            echo "::error::could not read APP_VERSION from check-endpoint.py"
+            exit 1
+          fi
+          tag="v$version"
+ 
+          if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+            echo "$tag already exists, nothing to do"
+            exit 0
+          fi
+ 
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$tag" -m "$tag"
+          git push origin "$tag"
+          echo "created $tag" >> "$GITHUB_STEP_SUMMARY"
+ 
+  # ── open the next release PR ──────────────────────────────────────────────
+  prepare:
+    name: Open release PR
+    needs: tag
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      # persist-credentials stays on: this job pushes the release branch.
+      - uses: actions/checkout@v4 # zizmor: ignore[artipacked]
+        with:
           fetch-depth: 0
  
       - uses: actions/setup-python@v5
@@ -55,21 +97,46 @@ jobs:
           [ "$rc" -eq 0 ] || exit "$rc"
           echo "release=true" >> "$GITHUB_OUTPUT"
  
-      - name: Commit, tag and push
+      - name: Push the branch and open the PR
         if: steps.bump.outputs.release == 'true'
         env:
-          VERSION: ${{ steps.bump.outputs.version }}
+          GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.bump.outputs.tag }}
+          VERSION: ${{ steps.bump.outputs.version }}
           FILES: ${{ steps.bump.outputs.files }}
         run: |
+          branch="release/$TAG"
+ 
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
  
+          git checkout -b "$branch"
           git add -- $FILES
-          git commit -m "chore(release): $TAG [skip ci]"
-          git tag -a "$TAG" -m "$TAG"
+          git commit -m "chore(release): $TAG"
  
-          git push origin HEAD:main
-          git push origin "$TAG"
+          # Force-push so a re-run updates the existing branch rather than
+          # failing. The branch only ever holds generated content.
+          git push --force origin "$branch"
  
-          echo "released $TAG" >> "$GITHUB_STEP_SUMMARY"
+          if gh pr list --head "$branch" --state open --json number \
+               --jq 'length' | grep -qv '^0$'; then
+            echo "a PR for $branch is already open, updated it in place"
+            exit 0
+          fi
+ 
+          gh pr create \
+            --base main \
+            --head "$branch" \
+            --title "chore(release): $TAG" \
+            --body "$(printf '%s\n' \
+              "Automated release prepared by \`scripts/release.py\`." \
+              "" \
+              "Version \`$VERSION\` across:" \
+              "" \
+              "$(printf -- '- \`%s\`\n' $FILES)" \
+              "" \
+              "Merging this PR triggers the \`tag\` job, which creates \`$TAG\`." )"
+ 
+          # To merge without a human, enable auto-merge on the repository and
+          # uncomment the next line. Checks still have to pass first.
+          # gh pr merge --auto --squash "$branch"
