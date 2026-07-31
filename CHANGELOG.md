@@ -1,5 +1,13 @@
 # Changelog
 
+## v2.2.1 (2026-07-31)
+
+### Bug Fixes
+
+- **check-endpoint.py**: usage & utc (AH-2026073094305)
+
+<!-- also in this release: chore -->
+
 ## v2.2.0 (2026-07-28)
 
 ### Features
