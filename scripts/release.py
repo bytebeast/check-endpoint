@@ -55,6 +55,10 @@ VERSION_FILES = [
         "contrib/check-endpoint-exporter/check-endpoint.py",
         re.compile(r'(?m)^(APP_VERSION\s*=\s*")([0-9]+\.[0-9]+\.[0-9]+)(")'),
     ),
+    (
+        "README.md",
+        re.compile(r'(?m)^(Version-)([0-9]+\.[0-9]+\.[0-9]+)(")'),
+    ),
 ]
 
 CHANGELOG = "CHANGELOG.md"
