@@ -7,6 +7,9 @@
   <a href="https://www.python.org/downloads/"><img alt="Python" src="https://img.shields.io/badge/Python-3.9+-cba6f7?style=flat"></a>
   <a href="https://github.com/bytebeast/check-endpoint/actions/workflows/github-code-scanning/codeql"><img src="https://github.com/bytebeast/check-endpoint/actions/workflows/github-code-scanning/codeql/badge.svg" alt="CodeQL"></a>
   <a href="https://github.com/bytebeast/check-endpoint/"><img src="https://img.shields.io/github/stars/bytebeast/check-endpoint?style=flat&label=Stars" alt="GitHub Stars"></a>
+  <a href="https://github.com/bytebeast/check-endpoint/actions/workflows/ruff.yml"><img alt="ruff" src="https://github.com/bytebeast/check-endpoint/actions/workflows/ruff.yml/badge.svg"></a>
+  <a href="https://github.com/bytebeast/check-endpoint/actions/workflows/python-security.yml"><img alt="python-security" src="https://github.com/bytebeast/check-endpoint/actions/workflows/python-security.yml/badge.svg"></a>
+  <a href="https://github.com/bytebeast/check-endpoint/actions/workflows/contrib-checks.yml"><img alt="contrib-checks" src="https://github.com/bytebeast/check-endpoint/actions/workflows/contrib-checks.yml/badge.svg"></a>
 </p>
 
 > I originally wrote this script after discovering that curl can independently
@@ -117,9 +120,9 @@ it in ways that aren't as convenient with the curl command-line interface.
 Some of the cases below are ones I have run into myself. The others are common
 or fairly obvious issues that are simply worth having written down. Either way
 this is not an exhaustive list, and each column can point at plenty of things
-not covered here. If you know of a root cause that belongs under one of
-these columns, whether it drives up latency, produces intermittent failures, or
-just makes a column read strangely, please
+not covered here. If you know of a root cause that belongs under one of these
+columns, whether it drives up latency, produces intermittent failures, or just
+makes a column read strangely, please
 [open an issue](https://github.com/bytebeast/check-endpoint/issues) and I will
 add it.
 
@@ -130,22 +133,22 @@ can read a row of output and jump straight to the section for whichever column
 looks wrong. Every column has a section; the two at the end are cross-column and
 are driven by flags rather than by a single field.
 
-| Column                           | Section                          |
-| -------------------------------- | -------------------------------- |
-| `#`                              | Run count, warm-up & outliers    |
-| `IP_ADDRESS`                     | Load balancing & round-robin     |
-| `DNS`                            | DNS & resolution                 |
-| `TCP_CONNECT`                    | TCP & network                    |
-| `TLS_HANDSHAKE`                  | TLS & security                   |
-| `PRE-TRANSFER`                   | Client-side & proxy setup        |
-| `1ST_BYTE`                       | Server processing                |
-| `REDIRECT`                       | Redirect chains                  |
-| `BODY_DL`                        | Body transfer & server-side IO   |
-| `TOTAL_TIME`                     | End-to-end budget                |
-| `HTTP_CODE`                      | Status codes & flakiness         |
-| `TOTAL_BYTES`                    | Response size & content drift    |
-| `PROTO`                          | HTTP version                     |
-| `CHUNKS` / `AVG_GAP` / `MAX_GAP` | Streaming responses (`-S`)       |
+| Column                           | Section                        |
+| -------------------------------- | ------------------------------ |
+| `#`                              | Run count, warm-up & outliers  |
+| `IP_ADDRESS`                     | Load balancing & round-robin   |
+| `DNS`                            | DNS & resolution               |
+| `TCP_CONNECT`                    | TCP & network                  |
+| `TLS_HANDSHAKE`                  | TLS & security                 |
+| `PRE-TRANSFER`                   | Client-side & proxy setup      |
+| `1ST_BYTE`                       | Server processing              |
+| `REDIRECT`                       | Redirect chains                |
+| `BODY_DL`                        | Body transfer & server-side IO |
+| `TOTAL_TIME`                     | End-to-end budget              |
+| `HTTP_CODE`                      | Status codes & flakiness       |
+| `TOTAL_BYTES`                    | Response size & content drift  |
+| `PROTO`                          | HTTP version                   |
+| `CHUNKS` / `AVG_GAP` / `MAX_GAP` | Streaming responses (`-S`)     |
 
 ---
 
@@ -313,7 +316,8 @@ The most diagnostic column in the table.
 
 ### `[TOTAL_BYTES]` - Response size & content drift
 
-- **Inconsistent content size** - `TOTAL_BYTES` varies across `-c N` runs, revealing A/B tests, CDN inconsistencies, partial or truncated responses, or
+- **Inconsistent content size** - `TOTAL_BYTES` varies across `-c N` runs,
+  revealing A/B tests, CDN inconsistencies, partial or truncated responses, or
   outright payload bugs
 - **Suspiciously small 200s** - a successful status with a tiny body is often a
   soft error page or an empty JSON envelope; `--expect-body` or `--expect-regex`
@@ -386,8 +390,8 @@ load-balancer hops are all included, not just model-side generation time.
 
 ### Beyond the columns
 
-These two aren't tied to a single column. They're driven by flags, and read
-from the response headers or from what you send.
+These two aren't tied to a single column. They're driven by flags, and read from
+the response headers or from what you send.
 
 #### `--server-hints` / `--capture-header` - CDN, edge & backend provenance
 
@@ -560,37 +564,37 @@ chmod +x check-endpoint.py
 
 ## Options
 
-| Flag                                            | Description                                                                                                                                   |
-| ----------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
-| `-c N` / `--count N`                            | Number of requests to perform (default: 1)                                                                                                    |
-| `-t N` / `--timeout N`                          | Per-request timeout in seconds (default: 10)                                                                                                  |
-| `-4` / `--ipv4`                                 | Force IPv4 resolution (default)                                                                                                               |
-| `-6` / `--ipv6`                                 | Force IPv6 resolution                                                                                                                         |
-| `-a ALIAS` / `--user-agent ALIAS`               | Use a baked-in UA string: `chrome`, `firefox`, `edge`, `safari`, `googlebot`                                                                  |
-| `-H 'K: V'` / `--header`                        | Custom request header, repeatable                                                                                                             |
-| `-d DATA` / `--data`                            | Request body (POST); prefix with `@` to read from a file                                                                                      |
-| `-X METHOD` / `--request`                       | Force an HTTP method (e.g. `PUT`, `DELETE`)                                                                                                   |
-| `-F` / `--force-dns`                            | Disable libcurl's DNS cache and connection reuse                                                                                              |
-| `-P` / `--auto-pin`                             | Resolve once, then pin all repeats to that IP                                                                                                 |
-| `-p IP` / `--pin-ip IP`                         | Pin all repeats to a specific IP address                                                                                                      |
-| `-S` / `--stream`                               | Time the gaps between chunks as they arrive and report `CHUNKS`/`AVG_GAP`/`MAX_GAP` - for testing SSE or chunked-transfer streaming responses |
-| `--http2`                                       | Request HTTP/2 via ALPN (HTTPS); falls back to HTTP/1.1 if unsupported                                                                        |
-| `--http2-prior-knowledge`                       | Send HTTP/2 over cleartext `http://` (h2c); only when the server is known to speak it                                                         |
-| `--stats`                                       | Print a percentile summary (min/p50/p90/p95/p99/max/mean/stdev) per phase; needs `-c 2` or more                                               |
-| `--assert-status CODE`                          | Fail (exit 1) if the HTTP status is not `CODE`                                                                                                |
-| `--max-total DUR`                               | Fail if `TOTAL_TIME` exceeds `DUR` (`500ms`, `1s`, `1.5s`)                                                                                    |
-| `--max-ttfb DUR`                                | Fail if `1ST_BYTE` (time to first byte) exceeds `DUR`                                                                                         |
-| `--max-dns` / `-tcp` / `-tls` / `-download DUR` | Fail if that individual phase exceeds `DUR`                                                                                                   |
-| `--expect-body STR`                             | Fail if the response body does not contain `STR`                                                                                              |
-| `--expect-regex RE`                             | Fail if the response body does not match regex `RE`                                                                                           |
-| `--tls-info`                                    | After the run, print TLS certificate details (issuer, expiry with days left, SANs)                                                            |
-| `--show-headers`                                | After the run, print selected response headers and the cache `HIT`/`MISS` verdict                                                             |
-| `--server-hints`                                | After the run, print a per-request summary of server/edge/CDN/backend-identifying headers, flagging which values stay constant, vary, or change every request |
-| `--capture-header NAME`                         | Capture a specific response header by name and show its value per request in that summary (repeatable, case-insensitive)                      |
+| Flag                                            | Description                                                                                                                                                                         |
+| ----------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `-c N` / `--count N`                            | Number of requests to perform (default: 1)                                                                                                                                          |
+| `-t N` / `--timeout N`                          | Per-request timeout in seconds (default: 10)                                                                                                                                        |
+| `-4` / `--ipv4`                                 | Force IPv4 resolution (default)                                                                                                                                                     |
+| `-6` / `--ipv6`                                 | Force IPv6 resolution                                                                                                                                                               |
+| `-a ALIAS` / `--user-agent ALIAS`               | Use a baked-in UA string: `chrome`, `firefox`, `edge`, `safari`, `googlebot`                                                                                                        |
+| `-H 'K: V'` / `--header`                        | Custom request header, repeatable                                                                                                                                                   |
+| `-d DATA` / `--data`                            | Request body (POST); prefix with `@` to read from a file                                                                                                                            |
+| `-X METHOD` / `--request`                       | Force an HTTP method (e.g. `PUT`, `DELETE`)                                                                                                                                         |
+| `-F` / `--force-dns`                            | Disable libcurl's DNS cache and connection reuse                                                                                                                                    |
+| `-P` / `--auto-pin`                             | Resolve once, then pin all repeats to that IP                                                                                                                                       |
+| `-p IP` / `--pin-ip IP`                         | Pin all repeats to a specific IP address                                                                                                                                            |
+| `-S` / `--stream`                               | Time the gaps between chunks as they arrive and report `CHUNKS`/`AVG_GAP`/`MAX_GAP` - for testing SSE or chunked-transfer streaming responses                                       |
+| `--http2`                                       | Request HTTP/2 via ALPN (HTTPS); falls back to HTTP/1.1 if unsupported                                                                                                              |
+| `--http2-prior-knowledge`                       | Send HTTP/2 over cleartext `http://` (h2c); only when the server is known to speak it                                                                                               |
+| `--stats`                                       | Print a percentile summary (min/p50/p90/p95/p99/max/mean/stdev) per phase; needs `-c 2` or more                                                                                     |
+| `--assert-status CODE`                          | Fail (exit 1) if the HTTP status is not `CODE`                                                                                                                                      |
+| `--max-total DUR`                               | Fail if `TOTAL_TIME` exceeds `DUR` (`500ms`, `1s`, `1.5s`)                                                                                                                          |
+| `--max-ttfb DUR`                                | Fail if `1ST_BYTE` (time to first byte) exceeds `DUR`                                                                                                                               |
+| `--max-dns` / `-tcp` / `-tls` / `-download DUR` | Fail if that individual phase exceeds `DUR`                                                                                                                                         |
+| `--expect-body STR`                             | Fail if the response body does not contain `STR`                                                                                                                                    |
+| `--expect-regex RE`                             | Fail if the response body does not match regex `RE`                                                                                                                                 |
+| `--tls-info`                                    | After the run, print TLS certificate details (issuer, expiry with days left, SANs)                                                                                                  |
+| `--show-headers`                                | After the run, print selected response headers and the cache `HIT`/`MISS` verdict                                                                                                   |
+| `--server-hints`                                | After the run, print a per-request summary of server/edge/CDN/backend-identifying headers, flagging which values stay constant, vary, or change every request                       |
+| `--capture-header NAME`                         | Capture a specific response header by name and show its value per request in that summary (repeatable, case-insensitive)                                                            |
 | `--full-cdn`                                    | Show the full comma-chained CDN/cache headers (`x-served-by`, `x-cache`, `x-cache-hits`, `via`); by default these collapse to just the final serving hop with the chain depth noted |
-| `--prometheus`                                  | Run as a Prometheus exporter daemon; re-probes on every scrape (see [contrib](contrib/check-endpoint-exporter/README.md))                     |
-| `--prometheus-port PORT`                        | Port for the `--prometheus` exporter (default: 9109)                                                                                          |
-| `--prometheus-bind ADDR`                        | Bind address for the `--prometheus` exporter (default: all interfaces)                                                                        |
+| `--prometheus`                                  | Run as a Prometheus exporter daemon; re-probes on every scrape (see [contrib](contrib/check-endpoint-exporter/README.md))                                                           |
+| `--prometheus-port PORT`                        | Port for the `--prometheus` exporter (default: 9109)                                                                                                                                |
+| `--prometheus-bind ADDR`                        | Bind address for the `--prometheus` exporter (default: all interfaces)                                                                                                              |
 
 ---
 
@@ -658,8 +662,8 @@ headers as `key=value`), followed by a rollup that classifies each header:
 
 - **constant** - the same value on every run (for example `server=nginx`)
 - **varied** - a few distinct values with per-value counts (the real signal for
-  which backend or PoP served each request, for example `x-cache = HIT x6,
-  MISS x4`)
+  which backend or PoP served each request, for example
+  `x-cache = HIT x6, MISS x4`)
 - **per-request** - a different value every run, which usually means a request
   or trace id such as `cf-ray` rather than a backend hint
 
@@ -734,7 +738,7 @@ or scrape annotations) and example alert rules.
 | `TOTAL_TIME`    | End-to-end wall-clock time including all redirects (the only cumulative column)                                                                                                         |
 | `HTTP_CODE`     | HTTP response status code                                                                                                                                                               |
 | `TOTAL_BYTES`   | Response body size received                                                                                                                                                             |
-| `PROTO`         | HTTP version actually used - `h1` (HTTP/1.1), `h1.0` (HTTP/1.0), `h2` (HTTP/2), or `h3` (HTTP/3). Teal for h2, dim for h1.                                                                                                 |
+| `PROTO`         | HTTP version actually used - `h1` (HTTP/1.1), `h1.0` (HTTP/1.0), `h2` (HTTP/2), or `h3` (HTTP/3). Teal for h2, dim for h1.                                                              |
 | `CHUNKS`        | _(only with `-S`)_ Number of chunks the response body arrived in                                                                                                                        |
 | `AVG_GAP`       | _(only with `-S`)_ Average time between consecutive chunks, excluding the first chunk's arrival (already covered by 1ST_BYTE and the columns before it); `n/a` with fewer than 2 chunks |
 | `MAX_GAP`       | _(only with `-S`)_ Longest of those inter-chunk gaps - a high `MAX_GAP` relative to `AVG_GAP` reveals a mid-stream stall; `n/a` with fewer than 2 chunks                                |
