@@ -39,7 +39,9 @@ from urllib.parse import urlsplit
 try:
     from datetime import UTC
 except ImportError:  # Python < 3.11
-    UTC = UTC
+    from datetime import timezone
+
+    UTC = timezone.utc
 
 # Cap how much response body we buffer for --expect-body / --expect-regex
 # checks, so a huge download can't exhaust memory. We only need enough to
@@ -1758,17 +1760,6 @@ COLOR SCHEME (Catppuccin Mocha - auto-disabled when output is piped)
   IP address     lavender
   Row number     dim overlay
 
-NOTES ON COMMON OBSERVATIONS
-  PRE-TRANSFER = 0ms on direct HTTPS
-    This is correct. Once TLS completes, libcurl is immediately ready to
-    transfer. The gap between APPCONNECT_TIME and PRETRANSFER_TIME is
-    genuinely near zero for direct HTTPS connections.
-
-  TLS HANDSHAKE has a value even when URL is http://
-    This is correct. The http:// URL redirected to https://, and the TLS
-    column shows the handshake time for that final HTTPS connection.
-    The redirect itself is accounted for in the REDIRECT column.
-
 FAILURE MARKERS
   <TO>          the request timed out (-t/--timeout exceeded)
   <DNS-FAIL>    DNS resolution failed
@@ -1805,78 +1796,302 @@ DEFAULT REQUEST HEADERS
   replace the default Accept.
 
 WHAT IT CAN FIND
+  Sections below follow the left-to-right order of the output columns, so
+  you can read a row of output and jump straight to the section for
+  whichever column looks wrong. Run with -c 10 or -c 20 to surface
+  patterns invisible in a single request.
 
-  DNS & Resolution
-    - Slow or flaky resolvers: high or variable DNS times across -c N runs
-    - Missing local DNS cache: DNS time stays high on every request instead
-      of dropping to ~0ms after the first lookup
-    - Short TTLs: DNS time spikes when the record expires mid-test
-    - Resolution failures: <DNS-FAIL> when a hostname cannot be resolved at all
+  Column                        Section
+  #                             Run count, warm-up & outliers
+  IP_ADDRESS                    Load balancing & round-robin
+  DNS                           DNS & resolution
+  TCP_CONNECT                   TCP & network
+  TLS_HANDSHAKE                 TLS & security
+  PRE-TRANSFER                  Client-side & proxy setup
+  1ST_BYTE                      Server processing
+  REDIRECT                      Redirect chains
+  BODY_DL                       Body transfer & server-side IO
+  TOTAL_TIME                    End-to-end budget
+  HTTP_CODE                     Status codes & flakiness
+  TOTAL_BYTES                   Response size & content drift
+  PROTO                         HTTP version
+  CHUNKS/AVG_GAP/MAX_GAP        Streaming responses (-S)
 
-  TCP & Network
-    - Geographic latency: high TCP CONNECT reveals distance to the server
-    - Server connection backlog: TCP time increases under load as the server
-      runs out of accept queue capacity
-    - Firewall / filtering: <CONN-FAIL> on specific ports or from specific
-      network paths
-    - Routing instability: variable TCP times across runs on the same IP
+  [#] Run count, warm-up & outliers
+    - Warm-up on run 1: the first request pays for cold DNS, a fresh TCP
+      handshake, and a full TLS negotiation; runs 2+ reuse all three.
+      Compare run 1 against the rest before concluding anything is slow.
+      If runs 2+ don't drop, that itself is the finding (see DNS,
+      TCP_CONNECT, and TLS_HANDSHAKE below)
+    - Outlier requests: a single request dramatically slower than the rest
+      reveals cold cache misses, JVM garbage collection pauses, or lock
+      contention
+    - Intermittent timeouts: one or two <TO> markers among otherwise
+      successful requests indicate connection pool exhaustion, GC pauses,
+      or health check races
+    - How many runs you need: -c 10 is enough to spot round-robin and
+      obvious flakiness; --stats p95/p99 only become meaningful around
+      -c 20 and up
 
-  TLS & Security
-    - Missing session resumption: TLS time stays high on every repeat request
-      instead of dropping on run 2+; compare first request vs subsequent ones
-    - Slow OCSP validation or long certificate chains: consistently high TLS
-    - Certificate problems: <TLS-FAIL> for expired cert, hostname mismatch,
-      or untrusted CA
-
-  Server Processing (1ST BYTE - most diagnostic column)
-    - Slow backend: high 1ST BYTE reveals heavy server work (DB queries,
-      auth checks, rendering, computation) before the first byte is sent
-    - Queue depth behind a reverse proxy: fast TCP + slow 1ST BYTE means
-      the proxy accepted the connection but the backend was busy
-    - Backend inconsistency: variable 1ST BYTE across runs reveals hot/cold
-      cache states, uneven DB load, or connection pool exhaustion
-    - Classic pattern - high 1ST BYTE + fast BODY DL: the server is slow
-      to produce the response but fast to send it once ready; the problem
-      is computation or IO on the server, not the network
-
-  Body Transfer & Server-side IO
-    - Slow server IO: high BODY DL relative to content size (slow disk reads,
-      DB streaming, rate-limited send buffers)
-    - Bandwidth throttling: BODY DL grows disproportionately with response size
-    - Inconsistent content size: TOTAL BYTES varies across -c N runs - reveals
-      A/B testing, CDN inconsistencies, partial/truncated responses, or bugs
-      where the server occasionally sends the wrong payload
-
-  Intermittent & Flaky Behavior
-    - Mixed response codes (200, 502, 503) across -c N runs reveal backend
-      instability, pods cycling in Kubernetes, or upstream timeouts
-    - Occasional <TO> markers among otherwise successful runs indicate
-      connection pool exhaustion, GC pauses, or health check races
-    - Outlier requests dramatically slower than the rest - cold cache misses,
-      JVM garbage collection pauses, or single-threaded lock contention
-
-  Load Balancing & Round-Robin
+  [IP_ADDRESS] Load balancing & round-robin
     - Uneven backends: without -P, different IPs per request show which
-      backends are in rotation; timing differences per IP identify slow ones
-    - Isolate one backend: use -P to pin all requests to a single IP and
-      measure it in isolation, then switch IPs to compare
-    - Intermittent errors from specific backends: combine IP column with HTTP
-      CODE column to see which backend is returning errors
+      backends are in rotation; timing differences per IP identify the
+      slow ones
+    - Isolate one backend: use -P to pin all requests to a single IP; then
+      switch IPs to compare them individually
+    - Backend-specific errors: correlate IP_ADDRESS with HTTP_CODE to see
+      which backend is misbehaving
+    - Rotation mid-test: the IP changing partway through a -c N run means
+      a DNS TTL expired and the resolver handed back a different member
+      of the pool
+    - One IP is not one server: behind a CDN or an anycast address, every
+      request hits the same IP while landing on different edge nodes.
+      IP_ADDRESS cannot see that; --server-hints can
+    - IPv4 vs IPv6 paths differ: run -4 and -6 separately against the same
+      host; a large gap points at a misconfigured or unoptimised AAAA path
 
-  Authentication & Specific Endpoints
-    - Test authenticated APIs: -H "Authorization: Bearer token" - a 401/403
-      or <AUTH-FAIL> points to auth configuration issues
-    - Test POST/PUT/PATCH endpoints: -d @payload.json combined with
-      -H "Content-Type: application/json" and -X PUT/-X PATCH
-    - Token expiry under load: combine auth headers with -c 20 to see if
-      token validation slows down or fails after repeated calls
-    - Custom routing headers: -H "X-Forwarded-For: ..." or
-      -H "X-Feature-Flag: ..." to test header-conditional behavior
+  [DNS] DNS & resolution
+    - Slow or flaky resolvers: high or variable DNS times across runs
+    - Missing local DNS cache: DNS stays high every request instead of
+      dropping to ~0ms after the first lookup
+    - Short TTLs: DNS spikes when the record expires mid-test
+    - libcurl's own cache hides the real cost: runs 2+ normally show ~0ms
+      because libcurl caches within the process, not because your
+      resolver is fast. Use -F to force a fresh lookup every run and
+      measure the true cost
+    - Deep CNAME chains: a hostname pointing through several CNAMEs
+      before the final A/AAAA record costs extra round-trips, showing as
+      consistently elevated DNS even on a healthy resolver
+    - <DNS-FAIL>: hostname cannot be resolved at all
 
-  Client-Side
-    - Non-zero PRE-TRANSFER on every request: this phase is internal libcurl
-      bookkeeping and is normally ~0ms; consistently high values indicate
-      CPU pressure on the machine running check-endpoint.py itself
+  [TCP_CONNECT] TCP & network
+    - Geographic latency: high TCP_CONNECT reveals round-trip time to the
+      server
+    - Connection backlog: TCP time grows as the server runs out of accept
+      queue capacity under load
+    - Firewall / filtering: <CONN-FAIL> on specific ports or from
+      specific network paths
+    - Connection reuse not happening: TCP should collapse to ~0ms from
+      run 2 onwards. If it stays high on every run without -F, something
+      is closing the connection each time: Connection: close, a proxy,
+      or a load-balancer idle timeout
+    - Packet loss: an occasional TCP time several times the median, with
+      the rest steady, suggests a lost SYN being retransmitted
+    - A proxy shortens what you're measuring: with a proxy in the path
+      this column is the time to the proxy, not to the origin
+
+  [TLS_HANDSHAKE] TLS & security
+    - Missing session resumption: TLS time stays high on every repeat
+      request instead of dropping after the first; compare run 1 vs
+      run 2+
+    - Slow OCSP validation or long cert chains: consistently elevated TLS
+      time even without load
+    - TLS 1.2 vs 1.3: 1.3 completes in one round-trip and 1.2 needs two,
+      so a handshake at roughly twice the TCP time suggests the server
+      negotiated 1.2
+    - n/a on an http:// URL is expected; a value here on an http:// URL
+      means the request was redirected to HTTPS - check REDIRECT
+    - Certificate expiry: pair with --tls-info for issuer, SANs, and days
+      remaining before the certificate lapses
+    - <TLS-FAIL>: expired cert, hostname mismatch, or untrusted CA
+
+  [PRE-TRANSFER] Client-side & proxy setup
+    - Non-zero PRE-TRANSFER: this phase is internal libcurl bookkeeping
+      and is normally ~0ms; consistently high values indicate CPU
+      pressure on the machine running check-endpoint.py itself
+    - Proxy tunnel setup: when connecting through an HTTP proxy, the
+      CONNECT exchange lands in this column rather than in TCP_CONNECT
+    - A useful control: because it should be ~0ms on a direct connection,
+      a non-zero value warns that the measurements themselves may be
+      distorted by local load; treat the rest of that row with suspicion
+
+  [1ST_BYTE] Server processing (the most diagnostic column in the table)
+    - Slow backend: high 1ST_BYTE reveals heavy server work: DB queries,
+      auth checks, computation, rendering
+    - Queue depth behind a reverse proxy: fast TCP but slow 1ST_BYTE means
+      the proxy accepted the connection but the backend was busy
+    - Backend inconsistency: variable 1ST_BYTE across runs reveals
+      hot/cold cache states, uneven DB load, or connection pool
+      exhaustion
+    - Classic pattern - high 1ST_BYTE + fast BODY_DL: the server is slow
+      to produce the response but fast to deliver it; the bottleneck is
+      computation or IO server-side, not the network
+    - Slow DB providing response data: consistently high 1ST_BYTE while
+      BODY_DL is fast points directly at backend data retrieval time
+    - Turn it into a check: --max-ttfb 300ms fails the run when the
+      backend crosses your threshold, the single most useful assertion
+      for CI
+
+  [REDIRECT] Redirect chains
+    - Why TOTAL_TIME exceeds the sum of the other columns: every other
+      column describes the final connection only. Redirect round-trips
+      are accounted for here and nowhere else
+    - The cost of an http:// -> https:// upgrade: hitting the plain-HTTP
+      URL pays for an extra DNS + TCP round-trip before the real request
+      starts. Request the https:// URL directly and this column drops
+      to n/a
+    - Redirects to a different host: when the redirect crosses hostnames,
+      the DNS, TCP_CONNECT and TLS_HANDSHAKE columns describe the
+      destination, not the URL you asked for, and IP_ADDRESS will not
+      match the original hostname
+    - Cross-region redirects: a .com that redirects to a country-specific
+      domain can add latency invisible in any other column
+    - <RDR-FAIL>: a redirect loop, or a chain longer than libcurl will
+      follow
+
+  [BODY_DL] Body transfer & server-side IO
+    - Slow server IO: high BODY_DL relative to content size (slow disk
+      reads, DB result streaming)
+    - Bandwidth throttling: BODY_DL scales disproportionately with
+      response size
+    - Responses are uncompressed by default: the probe does not send
+      Accept-Encoding, so servers return identity encoding. Add
+      -H "Accept-Encoding: gzip" to measure what a browser actually
+      experiences; BODY_DL and TOTAL_BYTES should both drop sharply, and
+      if they don't, compression isn't configured, which is the finding
+    - TCP slow-start on large bodies: the first response over a fresh
+      connection transfers more slowly than later ones; compare run 1
+      against runs 2+ before blaming the server
+
+  [TOTAL_TIME] End-to-end budget
+    - The only cumulative column: every other timing column is that
+      phase alone. Use this one for SLOs and user-facing budgets
+    - When it doesn't add up: if TOTAL_TIME is much larger than the sum
+      of the phases, the difference is almost always in REDIRECT
+    - Tail latency, not averages: --stats reports p50/p90/p95/p99; a
+      healthy p50 alongside a p99 several times higher is the signature
+      of an intermittent problem that averages hide
+    - Turn it into a check: --max-total 1s exits non-zero when breached,
+      so the probe drops straight into CI or cron
+
+  [HTTP_CODE] Status codes & flakiness
+    - Mixed response codes: running -c 20 surfaces occasional 502/503
+      mixed with 200s, revealing backend instability, pods cycling in
+      Kubernetes, or upstream timeouts
+    - Rate limiting under repetition: 429s appearing partway through a
+      -c 20 run mean you found the rate limit, not an outage; slow the
+      probe down before reading anything else into the results
+    - Auth problems: 401/403, or the <AUTH-FAIL> marker, when testing
+      protected endpoints with -H "Authorization: ..."
+    - A 3xx here means redirects were followed: the code shown is the
+      final response; check REDIRECT for what happened on the way
+    - Assert on it: --assert-status 200 fails the run on anything else
+
+  [TOTAL_BYTES] Response size & content drift
+    - Inconsistent content size: TOTAL_BYTES varies across -c N runs,
+      revealing A/B tests, CDN inconsistencies, partial or truncated
+      responses, or outright payload bugs
+    - Suspiciously small 200s: a successful status with a tiny body is
+      often a soft error page or an empty JSON envelope; --expect-body
+      or --expect-regex turn that into a real failure
+    - Truncated transfers: a byte count well below the rest of the run,
+      especially alongside <RECV-FAIL>, means the response was cut short
+    - Compression state: see the BODY_DL note above; byte counts are for
+      the encoding actually received
+
+  [PROTO] HTTP version
+    - Verify HTTP/2 is actually active: --http2 with the PROTO column
+      confirms whether the server is serving h2 or falling back to h1.
+      Useful to verify CDN or load balancer HTTP/2 configuration
+    - Connection reuse visible in timing: on repeated -c N runs with
+      --http2, TCP_CONNECT and TLS_HANDSHAKE drop to <1ms from run 2
+      onwards, confirming the persistent connection is being reused, one
+      of HTTP/2's main performance benefits
+    - Detect HTTP/2 connection issues: if PROTO shows h1 despite --http2,
+      the server or an intermediate proxy is downgrading the connection
+    - Values you may see: h1 (HTTP/1.1), h1.0 (HTTP/1.0), h2 (HTTP/2), h3
+      (HTTP/3). An h1.0 is worth investigating on its own: it usually
+      means an old proxy in the path, and HTTP/1.0 disables keep-alive by
+      default
+
+  [CHUNKS] [AVG_GAP] [MAX_GAP] Streaming responses (-S/--stream only)
+    Without -S, a streaming response is still measured meaningfully:
+    1ST_BYTE is the time until the first chunk/token arrives, and
+    BODY_DL is the total duration of the whole stream. What's missing
+    without -S is the rhythm of the stream - whether it arrives steadily
+    or in bursts with stalls.
+
+    AVG_GAP and MAX_GAP measure the time strictly between chunks. The
+    first chunk's arrival is deliberately excluded, since that span is
+    already the DNS + TCP + TLS + PRE-TRANSFER + 1ST_BYTE columns;
+    counting it again here would misreport ordinary connection setup as
+    if it were an in-stream stall. With fewer than 2 chunks there's no
+    inter-chunk gap to measure, so both columns correctly show n/a
+    rather than a misleading number.
+
+    This makes AVG_GAP functionally the same metric LLM serving
+    benchmarks call Inter-Token Latency (ITL), the average time between
+    successive tokens. Measuring it over the wire, rather than trusting
+    server-side logs, captures what the client actually experiences:
+    network jitter, reverse-proxy buffering, and load-balancer hops are
+    all included, not just model-side generation time.
+
+    - Token stutter / uneven generation: a large gap between AVG_GAP and
+      MAX_GAP means the stream paused somewhere in the middle, even
+      though BODY_DL and TOTAL_TIME look fine in aggregate. This is
+      exactly the kind of thing that makes a chat UI feel like it
+      "hangs then dumps text"
+    - Buffering misconfigurations: if a reverse proxy is accidentally
+      buffering the whole response before forwarding it (a common nginx
+      proxy_buffering misconfiguration), CHUNKS collapses to 1 or 2,
+      AVG_GAP/MAX_GAP show n/a, and 1ST_BYTE balloons to roughly equal
+      TOTAL_TIME, so the "stream" isn't actually streaming
+    - Inconsistency across backend replicas: combine with IP_ADDRESS to
+      see whether one particular backend produces the stutter (uneven
+      load, resource pressure) while others stream smoothly
+    - ITL benchmarking without server-side instrumentation: if you don't
+      have access to your model server's internal metrics (or you're
+      testing someone else's API), -c 20 -S gives you a client-side ITL
+      measurement for free: AVG_GAP is your typical inter-token latency,
+      MAX_GAP is your worst-case, and running multiple requests shows
+      whether ITL is consistent or degrades under concurrent load
+    - Works with auth and POST bodies: -S composes with -H/-d/-X, so you
+      can test real chat-completion or SSE endpoints directly:
+      -X POST -d '{{"stream": true, ...}}' -H "Authorization: Bearer ..." -S
+
+  BEYOND THE COLUMNS
+  These two aren't tied to a single column. They're driven by flags, and
+  read from the response headers or from what you send.
+
+  --server-hints / --capture-header - CDN, edge & backend provenance
+    When a single IP hides many backends (a CDN or a reverse proxy in
+    front of a pool), IP_ADDRESS alone cannot tell them apart.
+    --server-hints reads the response headers that do, one row per
+    request, then rolls each header up as constant (same every run),
+    varied (a few distinct values, the real "which backend served it"
+    signal), or per-request (a different value every run, typically a
+    trace or request id).
+    - Which edge/PoP served each request: x-served-by, x-amz-cf-pop, and
+      cf-ray reveal CDN point-of-presence and cache-node rotation across
+      -c N runs, even though every request hit the same anycast IP
+    - Cache hit ratio over the wire: x-cache / cf-cache-status varying
+      HIT vs MISS across runs shows how often you are actually served
+      from cache
+    - Which backend pod answered: track your own routing headers with
+      --capture-header x-backend --capture-header x-pod-name; a header
+      that varies between a handful of values maps directly to the pods
+      in rotation
+    - Confirm a header is present at all: a --capture-header value that
+      shows "-" on every run tells you the server never sent it
+    - Readable multi-hop chains: Fastly/Varnish chains like
+      x-served-by = shield-IAD, shield-IAD, edge-PAO collapse by default
+      to just x-served-by(final) = edge-PAO [3 hops in chain]; add
+      --full-cdn when you want the whole chain
+
+  -H / -d / -X - Authentication & specific endpoints
+    - Authenticated APIs: use -H "Authorization: Bearer token" to test
+      protected endpoints; <AUTH-FAIL> or 401/403 reveals auth
+      configuration problems
+    - POST/PUT/PATCH endpoints: use -d @payload.json
+      -H "Content-Type: application/json" -X PUT to test write endpoints
+      with real payloads
+    - Token expiry under load: combine auth headers with -c 20 to
+      observe if validation degrades or fails on repeated calls
+    - Header-conditional behavior: send routing or feature-flag headers
+      (-H "X-Feature: beta") to test conditional server logic
+    - Content negotiation: the probe sends Accept: */* unless you
+      override it; -H "Accept: application/json" reveals endpoints that
+      serve HTML to generic clients and JSON to specific ones
 
 HTTP/2 SUPPORT
   --http2
