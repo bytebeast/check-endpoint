@@ -6,7 +6,7 @@
   <a href="https://github.com/bytebeast/check-endpoint/blob/main/LICENSE"><img alt="License" src="https://img.shields.io/badge/License-MIT-a6e3a1?style=flat"></a>
   <a href="https://www.python.org/downloads/"><img alt="Python" src="https://img.shields.io/badge/Python-3.9+-cba6f7?style=flat"></a>
   <a href="https://github.com/bytebeast/check-endpoint/actions/workflows/github-code-scanning/codeql"><img src="https://github.com/bytebeast/check-endpoint/actions/workflows/github-code-scanning/codeql/badge.svg" alt="CodeQL"></a>
-  <a href="https://github.com/bytebeast/check-endpoint/"><img src="https://img.shields.io/github/stars/bytebeast/check-endpoint?style=flat&label=Stars" alt="GitHub Stars"></a>
+  <a href="https://github.com/bytebeast/check-endpoint/"><img src="https://img.shields.io/github/stars/bytebeast/check-endpoint?style=flat&label=Stars" alt="GitHub Stars"></a><br>
   <a href="https://github.com/bytebeast/check-endpoint/actions/workflows/ruff.yml"><img alt="ruff" src="https://github.com/bytebeast/check-endpoint/actions/workflows/ruff.yml/badge.svg"></a>
   <a href="https://github.com/bytebeast/check-endpoint/actions/workflows/python-security.yml"><img alt="python-security" src="https://github.com/bytebeast/check-endpoint/actions/workflows/python-security.yml/badge.svg"></a>
   <a href="https://github.com/bytebeast/check-endpoint/actions/workflows/contrib-checks.yml"><img alt="contrib-checks" src="https://github.com/bytebeast/check-endpoint/actions/workflows/contrib-checks.yml/badge.svg"></a>
