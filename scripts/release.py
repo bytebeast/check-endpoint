@@ -57,7 +57,7 @@ VERSION_FILES = [
     ),
     (
         "README.md",
-        re.compile(r'(?m)^(Version-)([0-9]+\.[0-9]+\.[0-9]+)(")'),
+        re.compile(r'(?m)^(Version-)([0-9]+\.[0-9]+\.[0-9]+)(-)'),
     ),
 ]
 
