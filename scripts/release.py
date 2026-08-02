@@ -41,23 +41,28 @@ from datetime import date
 from pathlib import Path
 
 # Files carrying the version, and the pattern that matches it. Each pattern
-# must have exactly one capture group around the version itself.
+# must capture the version number itself (and ONLY the version number) in a
+# group named "version" - nothing else about the pattern's shape matters.
+# write_versions()/current_version() splice text in/out using that named
+# group's span, so prefixes/suffixes of any length or structure (a closing
+# quote, a trailing "-" in a badge URL, or nothing at all) are preserved
+# untouched without the two ends needing matching group counts.
 VERSION_FILES = [
     (
         "check-endpoint.py",
-        re.compile(r'(?m)^(APP_VERSION\s*=\s*")([0-9]+\.[0-9]+\.[0-9]+)(")'),
+        re.compile(r'(?m)^APP_VERSION\s*=\s*"(?P<version>[0-9]+\.[0-9]+\.[0-9]+)"'),
     ),
     (
         "pyproject.toml",
-        re.compile(r'(?m)^(version\s*=\s*")([0-9]+\.[0-9]+\.[0-9]+)(")'),
+        re.compile(r'(?m)^version\s*=\s*"(?P<version>[0-9]+\.[0-9]+\.[0-9]+)"'),
     ),
     (
         "contrib/check-endpoint-exporter/check-endpoint.py",
-        re.compile(r'(?m)^(APP_VERSION\s*=\s*")([0-9]+\.[0-9]+\.[0-9]+)(")'),
+        re.compile(r'(?m)^APP_VERSION\s*=\s*"(?P<version>[0-9]+\.[0-9]+\.[0-9]+)"'),
     ),
     (
         "README.md",
-        re.compile(r"(Version-)([0-9]+\.[0-9]+\.[0-9]+)-"),
+        re.compile(r"Version-(?P<version>[0-9]+\.[0-9]+\.[0-9]+)-"),
     ),
 ]
 
@@ -193,7 +198,7 @@ def current_version():
             continue
         m = pattern.search(path.read_text())
         if m:
-            return m.group(2), name
+            return m.group("version"), name
     sys.exit("error: no version found in any of the version files")
 
 
@@ -217,8 +222,12 @@ def write_versions(new, dry_run):
             # Same inode as its target, which is already in the list.
             continue
         text = path.read_text()
-        new_text, n = pattern.subn(rf"\g<1>{new}\g<3>", text, count=1)
-        if n and new_text != text:
+        m = pattern.search(text)
+        if not m:
+            continue
+        start, end = m.span("version")
+        new_text = text[:start] + new + text[end:]
+        if new_text != text:
             if not dry_run:
                 path.write_text(new_text)
             changed.append(name)
