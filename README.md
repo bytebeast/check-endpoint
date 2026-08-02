@@ -75,7 +75,14 @@ it in ways that aren't as convenient with the curl command-line interface.
 - **Catppuccin Mocha color theme** - timing magnitude encoded in color (cool
   blues for fast, warm peach/red for slow); auto-disabled when output is piped
 - **curl-compatible flags** - `-H`, `-d`, `-X`, `-4`/`-6`, `-F`, `-a`,
-  `-p`/`-P`, `-S`
+  `-p`/`-P`, `-S`, `-b`/`-j`
+- **Cookie support** - `-b`/`--cookie` sends a literal cookie string or reads
+  from a file, curl-style; `-j`/`--cookie-jar` writes accumulated cookies out in
+  Netscape jar format (curl calls this `-c`, taken here by `--count`, so it's
+  remapped to `-j`); `--show-cookies` prints everything sent or received.
+  Cookies persist across every `-c N` run in the same invocation, so login flows
+  and session-affinity behavior can be tested across repeated requests, not just
+  one
 - **HTTP/2 support** - `--http2` requests HTTP/2 via ALPN negotiation; a `PROTO`
   column (printed last, after `TOTAL_BYTES`) shows the protocol actually used
   (`h1`, `h1.0`, `h2`, or `h3`); falls back gracefully to HTTP/1.1
@@ -558,43 +565,66 @@ chmod +x check-endpoint.py
 
 # Run as a Prometheus exporter that re-probes on every scrape
 ./check-endpoint.py --prometheus --prometheus-port 9109 https://example.com
+
+# Send a literal cookie (curl -b style)
+./check-endpoint.py -b "session=abc123; theme=dark" https://example.com
+
+# Send cookies read from a Netscape-format jar file
+./check-endpoint.py -b cookies.txt https://example.com
+
+# Save whatever cookies the server sets to a jar file (curl's -c, renamed -j here)
+./check-endpoint.py -j cookies.txt https://example.com
+
+# Round-trip a session: load a jar, reuse it across 5 requests, save it back
+./check-endpoint.py -b cookies.txt -j cookies.txt -c 5 https://example.com
+
+# See exactly what cookies were sent/received across all -c N runs
+./check-endpoint.py -c 5 --show-cookies https://example.com
+
+# Test a login endpoint, then confirm the session cookie carries into the next request
+./check-endpoint.py -c 2 -X POST -d '{"user":"me","pass":"x"}' \
+    -H "Content-Type: application/json" -b cookies.txt -j cookies.txt \
+    --show-cookies https://example.com/login
 ```
 
 ---
 
 ## Options
 
-| Flag                                            | Description                                                                                                                                                                         |
-| ----------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `-c N` / `--count N`                            | Number of requests to perform (default: 1)                                                                                                                                          |
-| `-t N` / `--timeout N`                          | Per-request timeout in seconds (default: 10)                                                                                                                                        |
-| `-4` / `--ipv4`                                 | Force IPv4 resolution (default)                                                                                                                                                     |
-| `-6` / `--ipv6`                                 | Force IPv6 resolution                                                                                                                                                               |
-| `-a ALIAS` / `--user-agent ALIAS`               | Use a baked-in UA string: `chrome`, `firefox`, `edge`, `safari`, `googlebot`                                                                                                        |
-| `-H 'K: V'` / `--header`                        | Custom request header, repeatable                                                                                                                                                   |
-| `-d DATA` / `--data`                            | Request body (POST); prefix with `@` to read from a file                                                                                                                            |
-| `-X METHOD` / `--request`                       | Force an HTTP method (e.g. `PUT`, `DELETE`)                                                                                                                                         |
-| `-F` / `--force-dns`                            | Disable libcurl's DNS cache and connection reuse                                                                                                                                    |
-| `-P` / `--auto-pin`                             | Resolve once, then pin all repeats to that IP                                                                                                                                       |
-| `-p IP` / `--pin-ip IP`                         | Pin all repeats to a specific IP address                                                                                                                                            |
-| `-S` / `--stream`                               | Time the gaps between chunks as they arrive and report `CHUNKS`/`AVG_GAP`/`MAX_GAP` - for testing SSE or chunked-transfer streaming responses                                       |
-| `--http2`                                       | Request HTTP/2 via ALPN (HTTPS); falls back to HTTP/1.1 if unsupported                                                                                                              |
-| `--http2-prior-knowledge`                       | Send HTTP/2 over cleartext `http://` (h2c); only when the server is known to speak it                                                                                               |
-| `--stats`                                       | Print a percentile summary (min/p50/p90/p95/p99/max/mean/stdev) per phase; needs `-c 2` or more                                                                                     |
-| `--assert-status CODE`                          | Fail (exit 1) if the HTTP status is not `CODE`                                                                                                                                      |
-| `--max-total DUR`                               | Fail if `TOTAL_TIME` exceeds `DUR` (`500ms`, `1s`, `1.5s`)                                                                                                                          |
-| `--max-ttfb DUR`                                | Fail if `1ST_BYTE` (time to first byte) exceeds `DUR`                                                                                                                               |
-| `--max-dns` / `-tcp` / `-tls` / `-download DUR` | Fail if that individual phase exceeds `DUR`                                                                                                                                         |
-| `--expect-body STR`                             | Fail if the response body does not contain `STR`                                                                                                                                    |
-| `--expect-regex RE`                             | Fail if the response body does not match regex `RE`                                                                                                                                 |
-| `--tls-info`                                    | After the run, print TLS certificate details (issuer, expiry with days left, SANs)                                                                                                  |
-| `--show-headers`                                | After the run, print selected response headers and the cache `HIT`/`MISS` verdict                                                                                                   |
-| `--server-hints`                                | After the run, print a per-request summary of server/edge/CDN/backend-identifying headers, flagging which values stay constant, vary, or change every request                       |
-| `--capture-header NAME`                         | Capture a specific response header by name and show its value per request in that summary (repeatable, case-insensitive)                                                            |
-| `--full-cdn`                                    | Show the full comma-chained CDN/cache headers (`x-served-by`, `x-cache`, `x-cache-hits`, `via`); by default these collapse to just the final serving hop with the chain depth noted |
-| `--prometheus`                                  | Run as a Prometheus exporter daemon; re-probes on every scrape (see [contrib](contrib/check-endpoint-exporter/README.md))                                                           |
-| `--prometheus-port PORT`                        | Port for the `--prometheus` exporter (default: 9109)                                                                                                                                |
-| `--prometheus-bind ADDR`                        | Bind address for the `--prometheus` exporter (default: all interfaces)                                                                                                              |
+| Flag                                            | Description                                                                                                                                                                                           |
+| ----------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `-c N` / `--count N`                            | Number of requests to perform (default: 1)                                                                                                                                                            |
+| `-t N` / `--timeout N`                          | Per-request timeout in seconds (default: 10)                                                                                                                                                          |
+| `-4` / `--ipv4`                                 | Force IPv4 resolution (default)                                                                                                                                                                       |
+| `-6` / `--ipv6`                                 | Force IPv6 resolution                                                                                                                                                                                 |
+| `-a ALIAS` / `--user-agent ALIAS`               | Use a baked-in UA string: `chrome`, `firefox`, `edge`, `safari`, `googlebot`                                                                                                                          |
+| `-H 'K: V'` / `--header`                        | Custom request header, repeatable                                                                                                                                                                     |
+| `-d DATA` / `--data`                            | Request body (POST); prefix with `@` to read from a file                                                                                                                                              |
+| `-X METHOD` / `--request`                       | Force an HTTP method (e.g. `PUT`, `DELETE`)                                                                                                                                                           |
+| `-F` / `--force-dns`                            | Disable libcurl's DNS cache and connection reuse                                                                                                                                                      |
+| `-P` / `--auto-pin`                             | Resolve once, then pin all repeats to that IP                                                                                                                                                         |
+| `-p IP` / `--pin-ip IP`                         | Pin all repeats to a specific IP address                                                                                                                                                              |
+| `-S` / `--stream`                               | Time the gaps between chunks as they arrive and report `CHUNKS`/`AVG_GAP`/`MAX_GAP` - for testing SSE or chunked-transfer streaming responses                                                         |
+| `-b DATA\|FILE` / `--cookie`                    | curl-style: literal cookie data (`"name=value"`) if it contains `=`, otherwise a filename to read cookies from. Also turns the cookie engine on, so `Set-Cookie` responses persist across `-c N` runs |
+| `-j FILE` / `--cookie-jar`                      | Write all cookies accumulated across every `-c N` run to `FILE` in Netscape jar format (curl's `-c`/`--cookie-jar`, renamed here since `-c` means `--count`)                                          |
+| `--show-cookies`                                | After the run, print every cookie sent or received (name, value, domain/path, flags, expiry) across all `-c N` runs                                                                                   |
+| `--http2`                                       | Request HTTP/2 via ALPN (HTTPS); falls back to HTTP/1.1 if unsupported                                                                                                                                |
+| `--http2-prior-knowledge`                       | Send HTTP/2 over cleartext `http://` (h2c); only when the server is known to speak it                                                                                                                 |
+| `--stats`                                       | Print a percentile summary (min/p50/p90/p95/p99/max/mean/stdev) per phase; needs `-c 2` or more                                                                                                       |
+| `--assert-status CODE`                          | Fail (exit 1) if the HTTP status is not `CODE`                                                                                                                                                        |
+| `--max-total DUR`                               | Fail if `TOTAL_TIME` exceeds `DUR` (`500ms`, `1s`, `1.5s`)                                                                                                                                            |
+| `--max-ttfb DUR`                                | Fail if `1ST_BYTE` (time to first byte) exceeds `DUR`                                                                                                                                                 |
+| `--max-dns` / `-tcp` / `-tls` / `-download DUR` | Fail if that individual phase exceeds `DUR`                                                                                                                                                           |
+| `--expect-body STR`                             | Fail if the response body does not contain `STR`                                                                                                                                                      |
+| `--expect-regex RE`                             | Fail if the response body does not match regex `RE`                                                                                                                                                   |
+| `--tls-info`                                    | After the run, print TLS certificate details (issuer, expiry with days left, SANs)                                                                                                                    |
+| `--show-headers`                                | After the run, print selected response headers and the cache `HIT`/`MISS` verdict                                                                                                                     |
+| `--server-hints`                                | After the run, print a per-request summary of server/edge/CDN/backend-identifying headers, flagging which values stay constant, vary, or change every request                                         |
+| `--capture-header NAME`                         | Capture a specific response header by name and show its value per request in that summary (repeatable, case-insensitive)                                                                              |
+| `--full-cdn`                                    | Show the full comma-chained CDN/cache headers (`x-served-by`, `x-cache`, `x-cache-hits`, `via`); by default these collapse to just the final serving hop with the chain depth noted                   |
+| `--prometheus`                                  | Run as a Prometheus exporter daemon; re-probes on every scrape (see [contrib](contrib/check-endpoint-exporter/README.md))                                                                             |
+| `--prometheus-port PORT`                        | Port for the `--prometheus` exporter (default: 9109)                                                                                                                                                  |
+| `--prometheus-bind ADDR`                        | Bind address for the `--prometheus` exporter (default: all interfaces)                                                                                                                                |
 
 ---
 
@@ -652,6 +682,54 @@ Prints a curated set of response headers (server, content type, caching headers,
 and so on) from the final response, plus a detected cache `HIT`/`MISS` verdict.
 Handy when you suspect a CDN or proxy is the difference between "works on their
 end" and "broken from here."
+
+### Cookies (`-b`/`--cookie`, `-j`/`--cookie-jar`, `--show-cookies`)
+
+`-b` is curl-compatible, and told apart the same way curl does it: if the
+argument contains a `=`, it's treated as literal cookie data to send
+(`-b "session=abc123; theme=dark"`); otherwise it's treated as a filename to
+read cookies from (Netscape jar format, or raw `Set-Cookie` lines). Either form
+also turns the cookie engine **on**, so `Set-Cookie` responses are captured and
+sent back automatically on later requests - not just parsed and discarded.
+
+`-j FILE` writes every cookie accumulated across the whole run to `FILE` in
+Netscape jar format once it finishes. This is curl's `-c`/`--cookie-jar` -
+renamed to `-j` here since `-c` is already `--count`.
+
+`--show-cookies` prints everything the cookie engine is holding after the run:
+name, value, domain/path, `secure`/`httponly`/subdomain flags, and expiry
+(colored the same way `--tls-info`'s certificate countdown is - green healthy,
+yellow close, peach near, red expired; session cookies just show "session" since
+they have no fixed expiry). It works with or without `-b`/ `-j` - by itself it
+just turns the engine on so you can see what a server sets.
+
+**Cookies persist across `-c N` runs.** Every run in a single invocation
+normally starts from a completely fresh libcurl handle with nothing carried
+over - cookie handling is the one deliberate exception. All runs share one
+cookie engine, the same way two separate `curl -b jar -c jar` invocations share
+state through a jar file on disk. That means a `Set-Cookie` from run 1 is
+automatically sent back on run 2 and beyond, so you can test login flows and
+session-affinity behavior across a sequence of requests instead of just one.
+
+```bash
+# send a literal cookie
+./check-endpoint.py -b "session=abc123" https://example.com
+
+# round-trip a session: load a jar, reuse it for 5 requests, save it back
+./check-endpoint.py -b cookies.txt -j cookies.txt -c 5 https://example.com
+
+# confirm a login endpoint sets a session cookie that carries into request 2
+./check-endpoint.py -c 2 -X POST -d '{"user":"me","pass":"x"}' \
+    -H "Content-Type: application/json" -b cookies.txt -j cookies.txt \
+    --show-cookies https://example.com/login
+```
+
+> **Note on literal `-b "name=value"` cookies:** they're sent correctly, but
+> won't themselves show up in `--show-cookies` or a `-j` jar - libcurl sends
+> literal cookie data directly as the `Cookie` header without adding it to the
+> cookie engine's store. They only appear there if the server also sends them
+> back via `Set-Cookie`. Cookies loaded from a **file** (`-b cookies.txt`) or
+> received via `Set-Cookie` always go through the store, so those do show up.
 
 ### Request provenance (`--server-hints`, `--capture-header`, `--full-cdn`)
 
