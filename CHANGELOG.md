@@ -1,5 +1,18 @@
 # Changelog
 
+## v2.3.0 (2026-08-02)
+
+### Features
+
+- **sync**: ensure contrib is insync (AH-2026080129821)
+
+### Bug Fixes
+
+- **timeout**: fix timeout is being swallowed (AH-2026080128841)
+- **release.py**: fix bug, and improve ver regex... (AH-2026080136108)
+
+<!-- also in this release: chore -->
+
 ## v2.2.1 (2026-07-31)
 
 ### Bug Fixes
