@@ -1,5 +1,11 @@
 # Changelog
 
+## v2.4.0 (2026-08-02)
+
+### Features
+
+- **cookies**: add cookie support (AH-2026080266299)
+
 ## v2.3.0 (2026-08-02)
 
 ### Features
