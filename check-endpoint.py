@@ -427,6 +427,35 @@ def try_print_live_field(curl, key, prev_time, row_col=""):
     return True, raw
 
 
+def _live_phase_already_passed(curl, key):
+    """
+    True if this live phase's window has definitely closed even though its
+    OWN timer is still 0 - i.e. the phase structurally does not apply to
+    this connection (the only current case: TLS HANDSHAKE on a plain
+    http:// URL, which never sets APPCONNECT_TIME) - as opposed to merely
+    "not reached yet".
+
+    Detected by checking whether any LATER LIVE_FIELD_KEYS timer has
+    already been set: PRETRANSFER_TIME/STARTTRANSFER_TIME can only be set
+    once curl has moved past the TLS phase, whether or not TLS actually
+    happened, so a later timer being live is proof this one legitimately
+    never will be.
+
+    Without this check, the live-printing loop in run_once() blocks on
+    RAW_TIME_GETTERS[key](curl) forever for a structurally-n/a phase, so
+    `pointer` gets stuck there for the rest of the request. That is
+    harmless if the request goes on to succeed (the success path force-
+    advances pointer past it), but if the request instead FAILS later -
+    e.g. a timeout mid BODY_DL on a plain http:// URL - the failure
+    marker ends up mis-attributed to TLS_HANDSHAKE instead of the phase
+    that actually failed, because pointer never left it.
+    """
+    idx = LIVE_FIELD_KEYS.index(key)
+    return any(
+        RAW_TIME_GETTERS[later](curl) > 0 for later in LIVE_FIELD_KEYS[idx + 1 :]
+    )
+
+
 def _colorize_time_padded(value: str, padded: str) -> str:
     """
     Like _colorize_time but wraps the already-padded string.
@@ -767,12 +796,24 @@ def run_once(
 
             if not quiet:
                 while pointer < len(LIVE_FIELD_KEYS):
+                    key = LIVE_FIELD_KEYS[pointer]
                     printed, prev_time = try_print_live_field(
-                        curl, LIVE_FIELD_KEYS[pointer], prev_time, row_col=rcol
+                        curl, key, prev_time, row_col=rcol
                     )
-                    if not printed:
-                        break
-                    pointer += 1
+                    if printed:
+                        pointer += 1
+                        continue
+                    # Not printed because raw <= 0 - either the phase
+                    # hasn't happened yet (keep waiting) or it structurally
+                    # never will (e.g. TLS on http://). Only the latter
+                    # should advance the pointer; see
+                    # _live_phase_already_passed for why this matters for
+                    # failure-marker placement.
+                    if _live_phase_already_passed(curl, key):
+                        write_empty_cell(key, field_width(key))
+                        pointer += 1
+                        continue
+                    break
 
             if num_active == 0:
                 break
@@ -814,6 +855,16 @@ def run_once(
 
     if failed:
         res["marker"] = marker_for_errno(fail_errno)
+        # FIX: previously, if pointer already reached len(LIVE_FIELD_KEYS) -
+        # i.e. DNS through 1ST_BYTE had ALL already printed real values, and
+        # the failure (e.g. a timeout) only happened afterward, during
+        # redirect-following or while the body was downloading - the code
+        # fell straight to blanking every FINAL_FIELD_KEYS cell with
+        # write_empty_cell and never wrote the marker anywhere. That made a
+        # genuine failure (e.g. <TO> mid-download) look identical to a
+        # normal empty/n-a cell, with no visible sign anything had gone
+        # wrong. res["marker"] was always set correctly for callers (e.g.
+        # assertions), so only the live table display was affected.
         if not quiet:
             if pointer < len(LIVE_FIELD_KEYS):
                 write_cell(
@@ -822,14 +873,34 @@ def run_once(
                     color=_col(C_ERROR),
                 )
                 pointer += 1
-            while pointer < len(LIVE_FIELD_KEYS):
-                write_empty_cell(
-                    LIVE_FIELD_KEYS[pointer],
-                    field_width(LIVE_FIELD_KEYS[pointer]),
+                while pointer < len(LIVE_FIELD_KEYS):
+                    write_empty_cell(
+                        LIVE_FIELD_KEYS[pointer],
+                        field_width(LIVE_FIELD_KEYS[pointer]),
+                    )
+                    pointer += 1
+                for key in FINAL_FIELD_KEYS:
+                    write_empty_cell(key, field_width(key))
+            else:
+                # All live phases already completed - the failure happened
+                # later. E_TOO_MANY_REDIRECTS is a REDIRECT-phase failure
+                # (curl gave up after completing the live phases for the
+                # last hop it followed); everything else (timeout, send/recv
+                # error, no-data) happened during body download, since any
+                # redirects are already resolved by the time STARTTRANSFER_
+                # TIME/1ST_BYTE is set. Put the marker on whichever column
+                # matches and blank the rest, so the failure is visible
+                # instead of silently dashed out.
+                marker_key = (
+                    "redirect"
+                    if fail_errno == pycurl.E_TOO_MANY_REDIRECTS
+                    else "download"
                 )
-                pointer += 1
-            for key in FINAL_FIELD_KEYS:
-                write_empty_cell(key, field_width(key))
+                for key in FINAL_FIELD_KEYS:
+                    if key == marker_key:
+                        write_cell(res["marker"], field_width(key), color=_col(C_ERROR))
+                    else:
+                        write_empty_cell(key, field_width(key))
             sys.stdout.write(RESET + "\n")
             sys.stdout.flush()
         curl.close()
