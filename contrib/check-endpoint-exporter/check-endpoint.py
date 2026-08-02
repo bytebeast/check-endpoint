@@ -657,6 +657,89 @@ def build_request_headers(headers):
     return headers
 
 
+# ── cookies ────────────────────────────────────────────────────────────────
+
+
+def resolve_cookie_arg(raw):
+    """
+    curl-style -b/--cookie argument. Two forms, exactly like curl -b:
+
+      -b "name=value; name2=value2"   literal Cookie data to send
+      -b cookies.txt                  a filename to read cookies from
+                                       (Netscape jar format, or raw
+                                       Set-Cookie header lines)
+
+    curl's own rule for telling them apart is simply: if the argument
+    contains a '=' character, it's literal cookie data; otherwise it's a
+    filename. Returns (literal_or_None, filename_or_None).
+    """
+    if raw is None:
+        return None, None
+    if "=" in raw:
+        return raw, None
+    return None, raw
+
+
+NETSCAPE_HTTPONLY_PREFIX = "#HttpOnly_"
+
+
+def parse_cookielist_line(line):
+    """
+    Parse one line from CURLINFO_COOKIELIST: Netscape cookie-file format
+    (domain, include-subdomains flag, path, secure flag, expiry as a unix
+    timestamp where 0 means "session cookie", name, value - tab separated).
+
+    libcurl marks HttpOnly cookies by prefixing the domain field with
+    '#HttpOnly_' rather than adding an eighth column, so that has to be
+    stripped off and tracked separately. Plain '#'-comment lines (jar file
+    headers) are skipped. Returns None for anything that isn't a real
+    cookie line.
+    """
+    http_only = False
+    if line.startswith(NETSCAPE_HTTPONLY_PREFIX):
+        http_only = True
+        line = line[len(NETSCAPE_HTTPONLY_PREFIX) :]
+    elif line.startswith("#"):
+        return None
+    parts = line.split("\t")
+    if len(parts) != 7:
+        return None
+    domain, include_sub, path, secure, expiry, name, value = parts
+    try:
+        expiry_i = int(expiry)
+    except ValueError:
+        expiry_i = 0
+    return {
+        "domain": domain,
+        "include_subdomains": include_sub == "TRUE",
+        "path": path,
+        "secure": secure == "TRUE",
+        "expiry": expiry_i,
+        "http_only": http_only,
+        "name": name,
+        "value": value,
+    }
+
+
+def get_cookie_jar(curl):
+    """
+    Structured cookies currently held by curl's cookie engine (populated
+    once the engine has been turned on via COOKIE / COOKIEFILE / SHARE).
+    Safe to call even when the engine was never enabled - libcurl just
+    returns an empty list rather than raising.
+    """
+    try:
+        raw_lines = curl.getinfo(pycurl.INFO_COOKIELIST)
+    except Exception:
+        return []
+    cookies = []
+    for line in raw_lines or []:
+        parsed = parse_cookielist_line(line)
+        if parsed is not None:
+            cookies.append(parsed)
+    return cookies
+
+
 # ── single request ────────────────────────────────────────────────────────────
 
 
@@ -678,6 +761,11 @@ def run_once(
     capture_body=False,
     capture_headers=False,
     capture_cert=False,
+    cookie_literal=None,
+    cookie_file=None,
+    cookie_jar=None,
+    cookie_share=None,
+    capture_cookies=False,
 ):
     # quiet=True drives the request but writes nothing to stdout (used by
     # --prometheus mode); the collected result dict is returned either way so
@@ -770,6 +858,36 @@ def run_once(
         curl.setopt(curl.FRESH_CONNECT, 1)
         curl.setopt(curl.FORBID_REUSE, 1)
 
+    # cookies_wanted is true if the caller asked for cookie handling in any
+    # form: sending some (-b), collecting a jar to write out (-j), or just
+    # displaying whatever the server sets (--show-cookies). Any of those
+    # needs the cookie ENGINE turned on, not just a literal Cookie header -
+    # COOKIEFILE "" does that without loading a file. cookie_share (a
+    # pycurl.CurlShare with LOCK_DATA_COOKIE) is what lets cookies persist
+    # across separate run_once() calls / curl handles for -c N > 1, the same
+    # way a real curl session persists them across separate invocations via
+    # a shared cookie jar file.
+    cookies_wanted = capture_cookies or bool(
+        cookie_literal or cookie_file or cookie_jar
+    )
+    if cookie_share is not None:
+        curl.setopt(curl.SHARE, cookie_share)
+    if cookie_file:
+        curl.setopt(curl.COOKIEFILE, cookie_file)
+    elif cookies_wanted:
+        curl.setopt(curl.COOKIEFILE, "")
+    if cookie_literal:
+        curl.setopt(curl.COOKIE, cookie_literal)
+    if cookie_jar:
+        curl.setopt(curl.COOKIEJAR, cookie_jar)
+        # Normally COOKIEJAR is written automatically when the easy handle
+        # is cleaned up, but that auto-save does NOT fire when the cookie
+        # store is external to the handle (cookie_share, above) - the
+        # handle no longer "owns" what it would be saving at close time.
+        # An explicit FLUSH after perform() sidesteps that: it writes the
+        # jar immediately regardless of sharing, so this is done
+        # unconditionally rather than only when cookie_share is set.
+
     # Always set, because build_request_headers() supplies a default Accept
     # even when the caller passed no -H flags at all.
     curl.setopt(curl.HTTPHEADER, build_request_headers(headers))
@@ -833,6 +951,14 @@ def run_once(
         multi.remove_handle(curl)
         multi.close()
 
+    if cookie_jar:
+        # See the setup comment above COOKIEJAR: with a shared cookie store
+        # the implicit write-on-cleanup doesn't fire, so force it here.
+        try:
+            curl.setopt(pycurl.COOKIELIST, "FLUSH")
+        except pycurl.error:
+            pass
+
     res = {
         "run": run_num,
         "ip": ip_display,
@@ -851,6 +977,7 @@ def run_once(
         "headers": parse_response_headers(header_lines) if capture_headers else None,
         "body": bytes(body_buf) if capture_body else None,
         "cert": extract_cert_info(curl) if capture_cert else None,
+        "cookies": get_cookie_jar(curl) if cookies_wanted else None,
     }
 
     if failed:
@@ -1283,6 +1410,64 @@ def print_tls_info(cert):
         body = (col + tail + RESET) if USE_COLOR else tail
         sys.stdout.write(f"{key} {body}\n")
     line("san:", cert.get("san"))
+    sys.stdout.flush()
+
+
+def _cookie_expiry_note(expiry_unix):
+    """(color, text) describing when a cookie expires, colored the same way
+    as --tls-info's certificate countdown: green healthy, yellow close,
+    peach near, red already expired. 0 means a session cookie - it has no
+    fixed expiry at all, so it gets a neutral note instead of a countdown."""
+    if not expiry_unix:
+        return _col(_OVERLAY0), "session (cleared when the client closes)"
+    when = datetime.fromtimestamp(expiry_unix, tz=UTC).strftime("%Y-%m-%d %H:%M:%S UTC")
+    days_left = (expiry_unix - time.time()) / 86400.0
+    if days_left < 0:
+        return _col(BOLD + _RED), f"EXPIRED {when}"
+    if days_left < 1:
+        return _col(_PEACH), f"{when}  (expires today)"
+    if days_left < 7:
+        return _col(_YELLOW), f"{when}  ({days_left:.0f} days left)"
+    return _col(_GREEN), f"{when}  ({days_left:.0f} days left)"
+
+
+def print_cookies_block(cookies):
+    """End-of-run block, styled like print_tls_info: every cookie currently
+    held by the (possibly shared, possibly jar-backed) cookie engine after
+    all -c N runs - not just what the final request happened to receive."""
+    end = RESET if USE_COLOR else ""
+    sys.stdout.write("\n" + _col(C_HEADER) + "COOKIES" + end + "\n")
+    if not cookies:
+        sys.stdout.write(
+            _col(C_LINENUM) + "  (no cookies sent or received)" + end + "\n"
+        )
+        sys.stdout.flush()
+        return
+
+    for c in cookies:
+        name_val = (
+            _col(_LAVENDER) + f"  {c['name']}=" + end + _col(_TEXT) + c["value"] + end
+        )
+        sys.stdout.write(name_val + "\n")
+
+        flags = []
+        if c["secure"]:
+            flags.append("secure")
+        if c["http_only"]:
+            flags.append("httponly")
+        if c["include_subdomains"]:
+            flags.append("includes subdomains")
+        flag_txt = f"   [{', '.join(flags)}]" if flags else ""
+
+        scope_key = _col(_BLUE) + "    domain/path:" + end
+        scope_val = _col(_SUBTEXT0) + f"{c['domain']}{c['path']}" + end
+        scope_flags = _col(_OVERLAY0) + flag_txt + end
+        sys.stdout.write(f"{scope_key} {scope_val}{scope_flags}\n")
+
+        exp_key = _col(_BLUE) + "    expires:" + end
+        exp_color, exp_text = _cookie_expiry_note(c["expiry"])
+        exp_body = (exp_color + exp_text + RESET) if USE_COLOR else exp_text
+        sys.stdout.write(f"{exp_key} {exp_body}\n")
     sys.stdout.flush()
 
 
@@ -1866,6 +2051,48 @@ DEFAULT REQUEST HEADERS
   Accept-Encoding and Accept-Language are separate headers and do not
   replace the default Accept.
 
+COOKIES (-b/--cookie, -j/--cookie-jar, --show-cookies)
+  -b DATA|FILE   curl-compatible, and told apart the same way curl does: if
+                 the argument contains '=' it's literal cookie data to send
+                 ('session=abc123; theme=dark'); otherwise it's a filename
+                 to read cookies from (Netscape jar format, or raw
+                 Set-Cookie lines). Either form also turns the cookie
+                 engine ON, so Set-Cookie responses are captured and resent
+                 automatically on later requests.
+
+  -j FILE        write every cookie accumulated across all -c N runs to
+                 FILE in Netscape jar format once the run finishes. This is
+                 curl's -c/--cookie-jar - renamed here to -j because -c
+                 already means --count.
+
+  --show-cookies print every cookie sent or received (name, value,
+                 domain/path, secure/httponly/subdomain flags, and expiry)
+                 after the run. Works with or without -b/-j - by itself it
+                 just turns the cookie engine on for the duration of the
+                 run so you can see what the server sets.
+
+  Persistence across -c N: each run normally gets a brand-new libcurl
+  handle with nothing carried over. Cookie handling is the one exception -
+  all runs in a single invocation share one cookie engine (via a
+  pycurl.CurlShare), the same way separate `curl -b jar -c jar` invocations
+  share state through a jar file on disk. That means a Set-Cookie from run
+  1 is automatically sent back on run 2+, so you can test login flows,
+  session affinity, and anything else that depends on cookie state
+  persisting across repeated requests - not just a single one.
+
+  Examples:
+    -b "session=abc123" https://example.com                     send one
+    -b cookies.txt https://example.com                           read a jar
+    -b cookies.txt -j cookies.txt -c 5 https://example.com        round-trip
+    --show-cookies https://example.com                        see what's set
+
+  A literal -b "name=value" is sent correctly but will NOT itself appear in
+  --show-cookies or a -j jar - libcurl sends it directly as the Cookie
+  header without adding it to the cookie engine's store. It only shows up
+  there if the server also sends it back via Set-Cookie. Cookies loaded
+  from a FILE (-b cookies.txt) or received via Set-Cookie always go through
+  the store, so those do appear.
+
 WHAT IT CAN FIND
   Sections below follow the left-to-right order of the output columns, so
   you can read a row of output and jump straight to the section for
@@ -2333,6 +2560,26 @@ EXAMPLES
       ./check-endpoint.py --prometheus --prometheus-port 9109 https://example.com
       # then: curl localhost:9109   (Prometheus scrapes the same endpoint)
 
+  Send a literal cookie (curl -b style):
+      ./check-endpoint.py -b "session=abc123; theme=dark" https://example.com
+
+  Send cookies read from a Netscape-format jar file:
+      ./check-endpoint.py -b cookies.txt https://example.com
+
+  Save whatever cookies the server sets to a jar file (curl's -c, renamed -j here):
+      ./check-endpoint.py -j cookies.txt https://example.com
+
+  Round-trip a session across repeated requests: load, save, reuse next time:
+      ./check-endpoint.py -b cookies.txt -j cookies.txt -c 5 https://example.com
+
+  See exactly what cookies were sent/received across all -c N runs:
+      ./check-endpoint.py -c 5 --show-cookies https://example.com
+
+  Test a login endpoint, then confirm the session cookie carries into the next request:
+      ./check-endpoint.py -c 2 -X POST -d '{{"user":"me","pass":"x"}}' \\
+          -H "Content-Type: application/json" -b cookies.txt -j cookies.txt \\
+          --show-cookies https://example.com/login
+
 STREAMING RESPONSES (SSE / CHUNKED TRANSFER) - THE -S/--stream FLAG
   Without -S, a streaming response is still measured meaningfully:
   1ST BYTE is the time until the first chunk/token arrives (streaming
@@ -2473,8 +2720,49 @@ NOTE ON -p/-P (IP pinning)
         ),
     )
 
+    # ── cookies ──────────────────────────────────────────────────────
+    cookie_group = parser.add_argument_group(
+        "cookies", "curl-compatible cookie handling."
+    )
+    cookie_group.add_argument(
+        "-b",
+        "--cookie",
+        dest="cookie",
+        default=None,
+        metavar="DATA|FILE",
+        help=(
+            "curl-style: a literal cookie string ('name=value; name2=value2') "
+            "to send, OR a filename to read cookies from (Netscape jar format "
+            "or raw Set-Cookie lines). Like curl, it's a filename if there's "
+            "no '=' in the argument, literal data otherwise. Either way this "
+            "also turns on the cookie engine, so Set-Cookie responses are "
+            "captured and resent on subsequent -c N runs"
+        ),
+    )
+    # curl itself uses -c for --cookie-jar, but -c is already --count here -
+    # -j is the substitute (mnemonic: "jar").
+    cookie_group.add_argument(
+        "-j",
+        "--cookie-jar",
+        dest="cookie_jar",
+        default=None,
+        metavar="FILE",
+        help=(
+            "write all cookies accumulated across every -c N run to FILE in "
+            "Netscape jar format when the run finishes (curl's -c/--cookie-jar, "
+            "renamed here since -c means --count)"
+        ),
+    )
+
     # ── output / analysis ──────────────────────────────────────────────
     out_group = parser.add_argument_group("output and analysis")
+    out_group.add_argument(
+        "--show-cookies",
+        dest="show_cookies",
+        action="store_true",
+        help="after the run, print every cookie sent or received (name, "
+        "value, domain/path, flags, and expiry) across all -c N runs",
+    )
     out_group.add_argument(
         "--stats",
         action="store_true",
@@ -2633,6 +2921,19 @@ NOTE ON -p/-P (IP pinning)
     )
     data = resolve_data_arg(args.data) if args.data is not None else None
 
+    cookie_literal, cookie_file = resolve_cookie_arg(args.cookie)
+    cookies_active = bool(
+        cookie_literal or cookie_file or args.cookie_jar or args.show_cookies
+    )
+    # A CurlShare with LOCK_DATA_COOKIE is what lets cookies persist across
+    # separate run_once() calls / curl handles on repeated -c N runs -
+    # without it, each run would get a brand-new, empty cookie jar and
+    # never see cookies set by an earlier run in the same invocation.
+    cookie_share = None
+    if cookies_active:
+        cookie_share = pycurl.CurlShare()
+        cookie_share.setopt(pycurl.SH_SHARE, pycurl.LOCK_DATA_COOKIE)
+
     pin_resolve = None
     pinned_ip = None
     if args.pin_ip is not None:
@@ -2751,6 +3052,11 @@ NOTE ON -p/-P (IP pinning)
                 capture_body=capture_body,
                 capture_headers=capture_headers,
                 capture_cert=want_cert,
+                cookie_literal=cookie_literal,
+                cookie_file=cookie_file,
+                cookie_jar=args.cookie_jar,
+                cookie_share=cookie_share,
+                capture_cookies=cookies_active,
             )
             if assert_cfg is not None:
                 res["_assert_fails"] = evaluate_assertions(res, assert_cfg)
@@ -2771,12 +3077,27 @@ NOTE ON -p/-P (IP pinning)
     print_header()
     results, cert = run_probe_cycle(quiet=False, want_cert=capture_cert)
 
+    if args.cookie_jar:
+        sys.stderr.write(f"# cookie jar written: {args.cookie_jar}\n")
+        sys.stderr.flush()
+
     if args.stats:
         print_summary(results)
     if args.tls_info:
         print_tls_info(cert)
     if args.show_headers:
         print_headers_block(results)
+    if args.show_cookies:
+        # Thanks to cookie_share, every run's cookie snapshot reflects the
+        # full accumulated state, not just what that one request received -
+        # so the last run captured (successful or not) is representative of
+        # all of them. Checked with "is not None", not truthiness, since an
+        # empty list is a meaningful "engine was on, nothing was set."
+        last_cookies = next(
+            (r["cookies"] for r in reversed(results) if r.get("cookies") is not None),
+            [],
+        )
+        print_cookies_block(last_cookies)
     if args.server_hints or args.capture_header_names:
         print_provenance_summary(
             results, args.server_hints, args.capture_header_names, args.full_cdn
