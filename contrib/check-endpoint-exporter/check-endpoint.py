@@ -898,9 +898,7 @@ def run_once(
                 )
                 for key in FINAL_FIELD_KEYS:
                     if key == marker_key:
-                        write_cell(
-                            res["marker"], field_width(key), color=_col(C_ERROR)
-                        )
+                        write_cell(res["marker"], field_width(key), color=_col(C_ERROR))
                     else:
                         write_empty_cell(key, field_width(key))
             sys.stdout.write(RESET + "\n")
