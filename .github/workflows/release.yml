@@ -13,7 +13,8 @@
 # releasable commits. Without that ordering the two race, and `prepare` would
 # compute the same version a second time and open a duplicate PR.
 #
-# Needs scripts/release.py. No third-party actions; `gh` is preinstalled.
+# Needs .github/scripts/release.py. No third-party actions; `gh` is
+# preinstalled.
  
 name: release
  
@@ -87,7 +88,7 @@ jobs:
         id: bump
         run: |
           set +e
-          python3 scripts/release.py
+          python3 .github/scripts/release.py
           rc=$?
           set -e
           if [ "$rc" -eq 2 ]; then
@@ -129,7 +130,7 @@ jobs:
             --head "$branch" \
             --title "chore(release): $TAG" \
             --body "$(printf '%s\n' \
-              "Automated release prepared by \`scripts/release.py\`." \
+              "Automated release prepared by \`.github/scripts/release.py\`." \
               "" \
               "Version \`$VERSION\` across:" \
               "" \
