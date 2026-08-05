@@ -57,7 +57,7 @@ ignore = [
 
 # S603 flags every subprocess call that is not shell=True. The arguments are
 # hardcoded git invocations from this file, with no user input reaching them.
-"scripts/release.py" = ["S603"]
+".github/scripts/release.py" = ["S603"]
 
 [tool.ruff.format]
 quote-style = "double"
