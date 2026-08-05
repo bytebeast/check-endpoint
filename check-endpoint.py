@@ -32,6 +32,8 @@ from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit
 
+__author__ = "github.com/bytebeast"
+
 # datetime.UTC is an alias for datetime.timezone.utc that was only added in
 # Python 3.11. Importing it unconditionally makes the whole script fail on 3.9
 # and 3.10 with "ImportError: cannot import name 'UTC' from 'datetime'", so

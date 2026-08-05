@@ -1,0 +1,73 @@
+# location: .github/ISSUE_TEMPLATE/feature_request.yml
+name: Feature request
+description: Propose a new flag, column, output mode, or diagnostic
+title: "[feat]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        New columns/flags are welcome, but check-endpoint's whole design is
+        built around a few conventions that any addition needs to fit into:
+        columns are per-phase deltas (not cumulative), empty cells are
+        either `n/a` (structurally doesn't apply) or `-` (empty for any
+        other reason), and failure markers print at the exact phase that
+        failed. Thinking through where a new feature fits into that up
+        front makes it a much faster review.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to diagnose or measure?
+      description: The real-world problem first, before the proposed solution - there may already be a way to see this with existing columns/flags.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed flag / column / output
+      description: What you'd want to type, and what you'd expect to see.
+      placeholder: |
+        ./check-endpoint.py --example-flag https://example.com
+
+        Adds an EXAMPLE column showing ...
+    validations:
+      required: true
+
+  - type: dropdown
+    id: kind
+    attributes:
+      label: What kind of addition is this?
+      options:
+        - New CLI flag
+        - New table column (always shown)
+        - New table column (opt-in, like -S's CHUNKS/AVG GAP/MAX GAP)
+        - New end-of-run summary block (like --stats/--tls-info/--show-headers)
+        - New failure marker
+        - New assertion (like --max-ttfb)
+        - Something else (explain in additional context)
+    validations:
+      required: true
+
+  - type: textarea
+    id: existing
+    attributes:
+      label: Closest existing column/flag
+      description: Optional, but helps - e.g. "closest to how -S adds CHUNKS/AVG GAP/MAX GAP conditionally in main()", or "closest to the REDIRECT column's n/a-vs-blank handling".
+
+  - type: dropdown
+    id: pr
+    attributes:
+      label: Would you be up for submitting a PR for this?
+      options:
+        - "Yes"
+        - "Maybe, would want input on approach first"
+        - "No, just proposing the idea"
+    validations:
+      required: true
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional context

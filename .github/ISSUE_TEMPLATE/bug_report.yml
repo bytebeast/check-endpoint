@@ -1,0 +1,137 @@
+# location: .github/ISSUE_TEMPLATE/bug_report.yml
+name: Bug report
+description: Something in check-endpoint.py is producing wrong or missing output
+title: "[bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for filing a bug. The fields below map to the things that
+        actually change how a row renders (color vs piped, http vs https,
+        -S mode, etc.) - filling them in accurately saves a lot of
+        back-and-forth, since a lot of check-endpoint's trickier bugs only
+        show up in specific combinations of these.
+
+  - type: textarea
+    id: command
+    attributes:
+      label: Command you ran
+      description: The full command line, redacting any real tokens/URLs you don't want public (e.g. swap in https://example.com).
+      placeholder: 'e.g. ./check-endpoint.py -c 10 -S -H "Authorization: Bearer ***" https://example.com/stream'
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected output
+      description: What you expected to see - a specific column value, a marker, an exit code, etc.
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual output
+      description: |
+        Paste the actual output. Raw ANSI color codes are fine to paste as-is.
+        If the bug is specifically about a column/marker being blank or wrong,
+        please include a couple of surrounding rows for context (e.g. run with
+        `-c 5` or more), not just the one row.
+      render: shell
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: check-endpoint version
+      description: "From the top of `--help`, or: grep APP_VERSION check-endpoint.py"
+      placeholder: "2.4.0"
+    validations:
+      required: true
+
+  - type: input
+    id: python-version
+    attributes:
+      label: Python version
+      description: "python3 --version"
+      placeholder: "Python 3.12.3"
+    validations:
+      required: true
+
+  - type: input
+    id: pycurl-version
+    attributes:
+      label: pycurl / libcurl version
+      description: 'python3 -c "import pycurl; print(pycurl.version)"'
+      placeholder: "PycURL/7.45.6 libcurl/8.5.0 OpenSSL/3.0.13 ..."
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - macOS
+        - Linux
+        - Windows
+        - Other (mention in additional context)
+    validations:
+      required: true
+
+  - type: dropdown
+    id: scheme
+    attributes:
+      label: Target URL scheme
+      description: >-
+        Matters more than it sounds like it should - TLS HANDSHAKE is
+        structurally n/a on plain http://, which changes how failures on
+        later phases get attributed.
+      options:
+        - "https://"
+        - "http://"
+        - "http:// that redirects to https://"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: color
+    attributes:
+      label: Was color on or off?
+      description: check-endpoint disables color automatically when stdout isn't a real terminal (piped, redirected to a file, etc.) - color and no-color take different code paths for every cell.
+      options:
+        - "On (ran directly in a terminal)"
+        - "Off (piped/redirected, e.g. `| cat`, `| tee file`, or run in CI)"
+        - Not sure
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: flags
+    attributes:
+      label: Flags involved
+      description: Check anything you used when you hit this - helps narrow down which code path is affected.
+      options:
+        - label: "-c N (multiple requests)"
+        - label: "-S / --stream"
+        - label: "-F / --force-dns"
+        - label: "-P / -p (IP pinning)"
+        - label: "--http2 or --http2-prior-knowledge"
+        - label: "-6 / --ipv6"
+        - label: "--stats"
+        - label: "--assert-status / --max-total / --max-ttfb / --max-dns / --max-tcp / --max-tls / --max-download"
+        - label: "--tls-info"
+        - label: "--show-headers"
+        - label: "--server-hints / --capture-header / --full-cdn"
+        - label: "--prometheus"
+        - label: "--expect-body / --expect-regex"
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional context
+      description: Anything else - a specific server/CDN behavior, a libcurl build quirk, whether it's intermittent vs every time, etc.
