@@ -1,0 +1,32 @@
+# location: .github/ISSUE_TEMPLATE/documentation.yml
+name: Documentation
+description: README, --help text, or in-code comments are missing, wrong, or unclear
+title: "[docs]: "
+labels: ["documentation"]
+body:
+  - type: dropdown
+    id: location
+    attributes:
+      label: Where?
+      options:
+        - README.md
+        - "--help output (the epilog in check-endpoint.py's argparse setup)"
+        - Code comments
+        - CHANGELOG.md
+        - Something else
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What's wrong or missing?
+      description: Quote the section if you can - README and --help cover a lot of ground (columns, markers, every flag, the "What Can It Find" diagnostics), so a pointer to the exact spot helps.
+    validations:
+      required: true
+
+  - type: textarea
+    id: suggestion
+    attributes:
+      label: Suggested wording
+      description: Optional - a rough pass is fine, doesn't need to be final copy.
