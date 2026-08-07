@@ -348,6 +348,10 @@ The most diagnostic column in the table.
 - **Values you may see** - `h1` (HTTP/1.1), `h1.0` (HTTP/1.0), `h2` (HTTP/2),
   `h3` (HTTP/3). An `h1.0` is worth investigating on its own: it usually means
   an old proxy in the path, and HTTP/1.0 disables keep-alive by default
+- **`h3` needs a hand-built libcurl** - no distribution currently packages
+  libcurl with ngtcp2 or quiche, so against an HTTP/3-capable endpoint you will
+  correctly see `h2`: the column reports what was actually negotiated, and a
+  stock libcurl cannot negotiate h3
 
 ### `[CHUNKS]` `[AVG_GAP]` `[MAX_GAP]` - Streaming responses (SSE / chunked transfer)
 
@@ -448,11 +452,34 @@ run, typically a trace or request id).
   but 3.8 is end-of-life, so 3.9 or newer is recommended.
 - **[pycurl](https://pypi.org/project/pycurl/)** - the only Python dependency;
   everything else the script uses is in the standard library.
-- **System libcurl** - pycurl links against it (`brew install curl` on macOS,
-  `apt install libcurl4-openssl-dev` on Debian/Ubuntu).
+- **A C toolchain and Python headers** - PyPI publishes no pycurl wheels for
+  Linux or BSD, so `pip install pycurl` always compiles from source there. Only
+  Windows gets prebuilt wheels.
+- **System libcurl _and_ its development headers** - pycurl links against
+  libcurl at build time and needs `curl-config` on `PATH` to find it. Having the
+  `curl` binary installed is not sufficient; the `-dev` / `-devel` package is
+  what provides `curl-config`.
+- **A matching TLS backend** - see the warning below.
 - **libcurl built with nghttp2** - only needed for `--http2`. Check with
   `curl --version | grep -i HTTP2`; without it, `--http2` simply falls back to
   HTTP/1.1 (the tool prints how to rebuild if you ask for it).
+- **A CA certificate bundle** - present by default on most distributions, but
+  absent from FreeBSD base and from minimal container images. Without one every
+  `https://` target fails at the handshake. See
+  [Platform Notes](#platform-notes).
+
+> **The TLS backend must match at compile time and link time.** pycurl has to be
+> built against the same TLS library that the libcurl it loads at runtime was
+> built with. Get it wrong and the build succeeds, then the script dies on
+> import with:
+>
+> ```
+> ImportError: pycurl: libcurl link-time ssl backend (openssl) is different
+> from compile-time ssl backend (none/other)
+> ```
+>
+> Every platform documented below ships an OpenSSL-linked libcurl, so set
+> `PYCURL_SSL_LIBRARY=openssl` when installing from source.
 
 If you package this (for example a `pyproject.toml`), set
 `requires-python = ">=3.9"` so the badge, these docs, and tooling such as ruff
@@ -462,20 +489,219 @@ all agree on the minimum version.
 
 ## Installation
 
+The general shape is the same everywhere: install the build dependencies, then
+install pycurl into a virtualenv with the SSL backend pinned.
+
 ```bash
 # Recommended: install pycurl in a pyenv virtualenv
 pyenv virtualenv 3.12.0 check-endpoint-env
 pyenv activate check-endpoint-env
-pip install pycurl
+PYCURL_SSL_LIBRARY=openssl pip install pycurl
+
+# Or a plain venv
+python3 -m venv ~/.venvs/check-endpoint
+source ~/.venvs/check-endpoint/bin/activate
+PYCURL_SSL_LIBRARY=openssl pip install pycurl
 
 # Or install into the system Python directly
-pip install pycurl --break-system-packages
-
-# macOS may need:  brew install curl
-# Linux may need:  apt install libcurl4-openssl-dev
+PYCURL_SSL_LIBRARY=openssl pip install pycurl --break-system-packages
 
 chmod +x check-endpoint.py
 ```
+
+> **On `--break-system-packages`:** recent Debian, Ubuntu, Fedora, RHEL, Amazon
+> Linux 2023 and Alpine mark the system Python as externally managed (PEP 668),
+> so a bare `pip install` refuses to run. The flag works, but it drops a
+> compiled extension into a directory the package manager owns. A virtualenv
+> sidesteps the conflict entirely, and most of these platforms also ship a
+> packaged pycurl (see below) if you'd rather not compile at all.
+
+Verify the install on any platform:
+
+```bash
+python3 -c 'import pycurl; print(pycurl.version)'
+```
+
+That prints the libcurl version **and** its TLS backend on one line. If it
+prints without error, the backends matched and the script will run. Then
+confirm HTTP/2 support if you plan to use `--http2`:
+
+```bash
+curl --version | grep -i HTTP2
+```
+
+---
+
+## Platform Notes
+
+| Platform | Packaged pycurl | Build deps | Platform-specific gotcha |
+| --- | --- | --- | --- |
+| macOS | via Homebrew Python | `brew install curl` | - |
+| Ubuntu / Debian | `python3-pycurl` | `libcurl4-openssl-dev` | Must not use the gnutls `-dev` variant |
+| RHEL / Rocky / AlmaLinux | `python3-pycurl` | `libcurl-devel` | FIPS mode restricts ciphers; RHEL 8 needs a newer Python |
+| CentOS Stream 9/10 | `python3-pycurl` | `libcurl-devel` | CentOS Linux 7 is EOL - see below |
+| Amazon Linux 2023 | - | `libcurl-devel` | Conflicts with `libcurl-minimal`; needs a swap first |
+| Alpine | `py3-pycurl` | `curl-dev`, `musl-dev` | No CA bundle by default; musl resolver differs |
+| FreeBSD | `py311-pycurl` | `curl` package | No CA bundle **and** no curl in base |
+
+### macOS
+
+```bash
+brew install curl
+PYCURL_SSL_LIBRARY=openssl pip install pycurl
+```
+
+Homebrew's curl is keg-only, so if `curl-config` isn't found, prepend it to
+`PATH` for the build: `PATH="$(brew --prefix curl)/bin:$PATH"`.
+
+### Ubuntu / Debian
+
+```bash
+# Zero-compile path (system Python only)
+sudo apt install -y python3-pycurl ca-certificates
+
+# Or build it yourself
+sudo apt install -y python3-venv python3-dev build-essential \
+                    libcurl4-openssl-dev libssl-dev ca-certificates
+```
+
+**Gotcha:** Debian and Ubuntu ship three competing `-dev` packages -
+`libcurl4-openssl-dev`, `libcurl4-gnutls-dev` and `libcurl4-nss-dev`. The
+runtime `libcurl4` is linked against OpenSSL, so installing the gnutls or nss
+variant produces a build that compiles cleanly and then fails at import with a
+backend mismatch. If one of the others is already present, `apt install
+libcurl4-openssl-dev` will offer to remove it - let it.
+
+### RHEL / Rocky Linux / AlmaLinux / CentOS Stream
+
+```bash
+# Zero-compile path, if python3-pycurl is in your enabled repos
+sudo dnf install -y python3-pycurl
+
+# Or build it yourself
+sudo dnf install -y python3-devel gcc libcurl-devel openssl-devel
+```
+
+**RHEL 8 and clones:** the default `python3` is 3.6, below this script's floor.
+Install a supported interpreter alongside it and build the venv from that:
+
+```bash
+sudo dnf install -y python3.12 python3.12-devel
+python3.12 -m venv ~/.venvs/check-endpoint
+```
+
+**CentOS Linux 7:** end-of-life since June 2024. Its libcurl (7.29) predates
+HTTP/2, so `--http2` can only ever fall back to HTTP/1.1 and `PROTO` will never
+show `h2`. Its TLS stack also predates TLS 1.3, which makes `TLS_HANDSHAKE`
+timings unrepresentative of what a modern client sees. Run the probe from a
+container or a newer host instead - measuring through a stack that much older
+than your users' defeats the point.
+
+**FIPS mode:** `fips-mode-setup --enabled` restricts libcurl to FIPS-approved
+cipher suites. Endpoints negotiating anything outside that set return
+`<TLS-FAIL>`. That is the host's policy working correctly, not a fault at the
+endpoint - cross-check from a non-FIPS host before escalating to the endpoint
+owner.
+
+**SELinux:** running the probe interactively is unconfined and needs nothing.
+Running it from a confined systemd service or cron job can have outbound
+connections denied, which surfaces as `<CONN-FAIL>` on every request. Check
+`ausearch -m avc -ts recent` before assuming the target is down.
+
+### Amazon Linux 2023
+
+AL2023 splits curl into minimal and full packages, and the minimal ones are the
+default in every AMI and container image. `libcurl-devel` conflicts with
+`libcurl-minimal`, so a plain install fails on a stock instance:
+
+```bash
+# Swap to the full libcurl first
+sudo dnf swap libcurl-minimal libcurl-full
+sudo dnf swap curl-minimal curl-full        # optional, for the curl CLI itself
+
+sudo dnf install -y python3-devel gcc libcurl-devel openssl-devel
+```
+
+`sudo dnf install --allowerasing libcurl-devel` resolves the same conflict in
+one step if you'd rather not swap explicitly.
+
+- The default `python3` is 3.9, which satisfies the floor. `python3.11` is
+  available if you want something newer.
+- Both the minimal and full libcurl are built against OpenSSL 3 with nghttp2,
+  so `--http2` works either way.
+- **Amazon Linux 2** (the older one) ships Python 3.7 and a much older curl.
+  Treat it like CentOS 7 above.
+
+### Alpine Linux
+
+```bash
+# Zero-compile path
+apk add --no-cache python3 py3-pycurl ca-certificates
+update-ca-certificates
+
+# Or build it yourself
+apk add --no-cache python3 python3-dev py3-pip gcc musl-dev \
+                   curl-dev openssl-dev ca-certificates
+update-ca-certificates
+```
+
+**The CA bundle is the one that bites.** Alpine base images ship without
+`ca-certificates`. Without it libcurl has no trust store, and **every**
+`https://` target returns `<TLS-FAIL>` at the handshake phase - identical to
+what a genuinely broken certificate looks like. If a fresh Alpine container
+reports `<TLS-FAIL>` against every endpoint including known-good ones, install
+the package before investigating anything else. `--tls-info` is unusable until
+this is fixed.
+
+**musl changes what the `DNS` column measures.** Alpine uses musl libc, not
+glibc, and its resolver behaves differently: it queries all configured
+nameservers in parallel rather than sequentially, and has historically had
+weaker EDNS0 handling, so large DNS responses can fail over UDP and surface as
+`<DNS-FAIL>` where a glibc host succeeds. Don't compare DNS timings between an
+Alpine box and a glibc box - you're measuring two different resolvers.
+
+### FreeBSD
+
+```bash
+# Zero-compile path
+pkg install -y python311 py311-pycurl ca_root_nss
+
+# Or build it yourself
+pkg install -y python311 py311-pip curl ca_root_nss
+```
+
+Two things are missing from the base system:
+
+1. **No CA bundle.** FreeBSD base ships no trust store, so without
+   `ca_root_nss` every HTTPS request fails verification. The bundle lands at
+   `/usr/local/etc/ssl/cert.pem`.
+2. **No curl.** Base has `fetch`, not curl. Both `curl-config` (needed to build
+   pycurl) and the runtime libcurl come from the `curl` package - FreeBSD
+   doesn't split out a separate `-devel` package.
+
+**Shebang:** the script uses `#!/usr/bin/env python3`, but FreeBSD installs
+interpreters to `/usr/local/bin` as versioned binaries, and `pkg install
+python311` alone does not create a plain `python3`. Either `pkg install python3`
+(the meta port that provides the symlink), or invoke it explicitly as
+`python3.11 ./check-endpoint.py`.
+
+### CA bundle locations
+
+Useful when a `<TLS-FAIL>` needs to be traced to the client rather than the
+endpoint:
+
+| Platform | Path | Package |
+| --- | --- | --- |
+| Debian / Ubuntu | `/etc/ssl/certs/ca-certificates.crt` | `ca-certificates` |
+| RHEL / Rocky / Alma / AL2023 | `/etc/pki/tls/certs/ca-bundle.crt` | `ca-certificates` |
+| Alpine | `/etc/ssl/certs/ca-certificates.crt` | `ca-certificates` |
+| FreeBSD | `/usr/local/etc/ssl/cert.pem` | `ca_root_nss` |
+
+### Running from cron or a systemd timer
+
+Colors auto-disable when output isn't a TTY, so nothing extra is needed there.
+Assertion exit codes (`--assert-status`, `--max-*`) pass through normally. Give
+the unit an absolute path to the venv's Python rather than relying on `PATH`.
 
 ---
 
@@ -870,6 +1096,20 @@ without it, the columns end at `PROTO` and the rest of the table is unaffected.
 Markers are printed at the phase where failure occurred. All subsequent columns
 for that row are left blank (`-`), and the next request (if `-c N > 1`) still
 runs.
+
+> **Rule out the client first.** Three host conditions produce markers that are
+> indistinguishable from a genuine remote fault, and all three will have you
+> reporting a problem that isn't there:
+>
+> - **No CA bundle** (Alpine, FreeBSD, minimal container images) - `<TLS-FAIL>`
+>   on every `https://` target, including known-good ones
+> - **RHEL in FIPS mode** - `<TLS-FAIL>` on endpoints negotiating a cipher
+>   outside the approved set
+> - **`-6` on a single-stack host** - `<CONN-FAIL>` on every request; IPv6 is
+>   off by default on many VPC subnets and container runtimes
+>
+> If a marker appears on *every* row against *every* endpoint, suspect the host
+> before the network. See [Platform Notes](#platform-notes).
 
 ---
 
