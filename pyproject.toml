@@ -6,7 +6,7 @@
 [project]
 name = "check-endpoint"
 # Duplicated as APP_VERSION in check-endpoint.py. Bump both together.
-version = "2.5.0"
+version = "2.5.1"
 
 # THE single source of truth for the minimum Python version.
 #

@@ -1,5 +1,11 @@
 # Changelog
 
+## v2.5.1 (2026-08-07)
+
+### Bug Fixes
+
+- **check-endpoint.py **: chmod +x (AH-2026080799342)
+
 ## v2.5.0 (2026-08-07)
 
 ### Features
