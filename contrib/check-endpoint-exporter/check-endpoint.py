@@ -22,6 +22,7 @@ Linux users may need:                        apt install libcurl4-openssl-dev
 
 import argparse
 import math
+import os
 import re
 import socket
 import statistics
@@ -763,6 +764,8 @@ def run_once(
     capture_body=False,
     capture_headers=False,
     capture_cert=False,
+    insecure=False,
+    cacert=None,
     cookie_literal=None,
     cookie_file=None,
     cookie_jar=None,
@@ -841,8 +844,20 @@ def run_once(
     curl.setopt(curl.TIMEOUT_MS, int(timeout * 1000))
     curl.setopt(curl.CONNECTTIMEOUT_MS, int(timeout * 1000))
     curl.setopt(curl.NOSIGNAL, 1)
-    curl.setopt(curl.SSL_VERIFYPEER, 1)
-    curl.setopt(curl.SSL_VERIFYHOST, 2)
+    # TLS verification. Default is full verification; -k drops it entirely and
+    # --cacert keeps it but points at a different trust store.
+    #
+    # SSL_VERIFYHOST takes 0 or 2, never 1. Old libcurl treated 1 as "check the
+    # name but only warn"; since 7.28.1 passing 1 is a hard error
+    # (CURLE_BAD_FUNCTION_ARGUMENT), so the disabled case must use 0.
+    if insecure:
+        curl.setopt(curl.SSL_VERIFYPEER, 0)
+        curl.setopt(curl.SSL_VERIFYHOST, 0)
+    else:
+        curl.setopt(curl.SSL_VERIFYPEER, 1)
+        curl.setopt(curl.SSL_VERIFYHOST, 2)
+        if cacert:
+            curl.setopt(curl.CAINFO, cacert)
     curl.setopt(curl.USERAGENT, user_agent)
     curl.setopt(
         curl.IPRESOLVE,
@@ -979,6 +994,12 @@ def run_once(
         "headers": parse_response_headers(header_lines) if capture_headers else None,
         "body": bytes(body_buf) if capture_body else None,
         "cert": extract_cert_info(curl) if capture_cert else None,
+        # Carried into --json / --prometheus so a run made without certificate
+        # verification is never mistaken for a clean one. With -k the whole
+        # <TLS-FAIL> family (E_PEER_FAILED_VERIFICATION, E_SSL_CACERT,
+        # E_SSL_CERTPROBLEM) can no longer fire, so a table from a broken
+        # endpoint looks identical to one from a healthy endpoint.
+        "insecure": insecure,
         "cookies": get_cookie_jar(curl) if cookies_wanted else None,
     }
 
@@ -1808,6 +1829,15 @@ def build_prometheus_text(url, results, cert):
         "check_endpoint_failures_total",
         "Number of failed probes this scrape",
         len(results) - len(ok),
+    )
+    # Without this, a -k exporter reports a healthy endpoint indistinguishably
+    # from a verified one, and check_endpoint_tls_expiry_days below describes a
+    # certificate that was never validated. Alert on it being 1 if you don't
+    # expect it.
+    emit(
+        "check_endpoint_tls_verification_disabled",
+        "1 if probes ran with -k/--insecure (certificate not verified), else 0",
+        1 if any(r.get("insecure") for r in results) else 0,
     )
 
     if last is not None:
@@ -2712,6 +2742,25 @@ NOTE ON -p/-P (IP pinning)
         help="resolve once and pin all repeats to that IP",
     )
     parser.add_argument(
+        "-k",
+        "--insecure",
+        action="store_true",
+        help=(
+            "skip TLS certificate verification (like curl -k). Timings stay "
+            "accurate, but certificate failures stop being reported - see "
+            "--cacert for the safer option against internal CAs"
+        ),
+    )
+    parser.add_argument(
+        "--cacert",
+        default=None,
+        metavar="FILE",
+        help=(
+            "verify against this CA bundle instead of the system trust store; "
+            "keeps verification on for endpoints using a private CA"
+        ),
+    )
+    parser.add_argument(
         "-S",
         "--stream",
         action="store_true",
@@ -2949,6 +2998,30 @@ NOTE ON -p/-P (IP pinning)
         )
         print(f"# pinned: {pinned_host} -> {pinned_ip}")
 
+    # ── TLS verification flags ────────────────────────────────────────
+    # -k and --cacert are mutually exclusive in effect: -k discards the trust
+    # store entirely, so silently ignoring a --cacert the user bothered to
+    # supply would be the wrong kind of quiet. Fail instead.
+    if args.insecure and args.cacert:
+        sys.stderr.write(
+            "error: -k/--insecure and --cacert are mutually exclusive.\n"
+            "  -k disables verification entirely, so a CA bundle is unused.\n"
+            "  Drop -k to verify against --cacert, or drop --cacert to skip verification.\n"
+        )
+        sys.exit(1)
+    if args.cacert and not os.path.isfile(args.cacert):
+        sys.stderr.write(f"error: --cacert file not found: {args.cacert}\n")
+        sys.exit(1)
+    if args.insecure:
+        # stderr, so it stays out of piped table output but is impossible to
+        # miss interactively. This tool's output gets handed to other people as
+        # evidence; a -k run that produced a clean table has NOT shown that the
+        # certificate is good, and the run needs to say so.
+        sys.stderr.write(
+            "warning: -k/--insecure - certificate verification is OFF. "
+            "Certificate failures will not be reported.\n"
+        )
+
     http_version = None
     if getattr(args, "http2", False):
         if not _HAS_HTTP2:
@@ -3054,6 +3127,8 @@ NOTE ON -p/-P (IP pinning)
                 capture_body=capture_body,
                 capture_headers=capture_headers,
                 capture_cert=want_cert,
+                insecure=args.insecure,
+                cacert=args.cacert,
                 cookie_literal=cookie_literal,
                 cookie_file=cookie_file,
                 cookie_jar=args.cookie_jar,

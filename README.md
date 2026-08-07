@@ -234,6 +234,14 @@ are driven by flags rather than by a single field.
 - **Certificate expiry** - pair with `--tls-info` for issuer, SANs, and days
   remaining before the certificate lapses
 - **`<TLS-FAIL>`** - expired cert, hostname mismatch, or untrusted CA
+- **Private CA or self-signed cert** - use `--cacert FILE` to verify against
+  your own bundle rather than reaching for `-k`; verification stays on, so a
+  real fault is still caught. `-k` is for when the certificate is knowingly
+  broken and you need the timings anyway
+- **A missing SAN cannot be fixed with `--cacert`** - OpenSSL 3 ignores the
+  Common Name entirely for hostname matching, so a `CN=host` certificate with no
+  `subjectAltName` fails verification even against the correct CA. That one
+  genuinely does need `-k`
 
 ### `[PRE-TRANSFER]` - Client-side & proxy setup
 
@@ -697,6 +705,10 @@ endpoint:
 | Alpine | `/etc/ssl/certs/ca-certificates.crt` | `ca-certificates` |
 | FreeBSD | `/usr/local/etc/ssl/cert.pem` | `ca_root_nss` |
 
+If the endpoint uses a private CA rather than a public one, installing the
+system bundle won't help - point `--cacert` at your own CA file instead. That
+keeps verification on, unlike `-k`.
+
 ### Running from cron or a systemd timer
 
 Colors auto-disable when output isn't a TTY, so nothing extra is needed there.
@@ -755,6 +767,15 @@ the unit an absolute path to the venv's Python rather than relying on `PATH`.
 ./check-endpoint.py -X POST -d '{"stream": true, "prompt": "hi"}' \
     -H "Content-Type: application/json" -H "Authorization: Bearer xyz123" \
     -S https://api.example.com/v1/chat
+
+# Verify against a private CA instead of the system trust store
+./check-endpoint.py --cacert /etc/ssl/certs/internal-ca.pem https://internal.corp.example/health
+
+# Skip certificate verification (curl -k); prints a warning to stderr
+./check-endpoint.py -k https://staging.example.com
+
+# Inspect the certificate chain of an endpoint you can't validate
+./check-endpoint.py -k --tls-info https://staging.example.com
 
 # Percentile summary across 20 runs
 ./check-endpoint.py -c 20 --stats https://example.com
@@ -830,6 +851,8 @@ the unit an absolute path to the venv's Python rather than relying on `PATH`.
 | `-F` / `--force-dns`                            | Disable libcurl's DNS cache and connection reuse                                                                                                                                                      |
 | `-P` / `--auto-pin`                             | Resolve once, then pin all repeats to that IP                                                                                                                                                         |
 | `-p IP` / `--pin-ip IP`                         | Pin all repeats to a specific IP address                                                                                                                                                              |
+| `-k` / `--insecure`                             | Skip TLS certificate verification (curl's `-k`). Timings stay accurate, but the whole `<TLS-FAIL>` family stops being reported - see the warning under [Failure Markers](#failure-markers)             |
+| `--cacert FILE`                                 | Verify against `FILE` instead of the system trust store. Keeps verification **on**, so use this rather than `-k` for endpoints behind a private CA. Mutually exclusive with `-k`                       |
 | `-S` / `--stream`                               | Time the gaps between chunks as they arrive and report `CHUNKS`/`AVG_GAP`/`MAX_GAP` - for testing SSE or chunked-transfer streaming responses                                                         |
 | `-b DATA\|FILE` / `--cookie`                    | curl-style: literal cookie data (`"name=value"`) if it contains `=`, otherwise a filename to read cookies from. Also turns the cookie engine on, so `Set-Cookie` responses persist across `-c N` runs |
 | `-j FILE` / `--cookie-jar`                      | Write all cookies accumulated across every `-c N` run to `FILE` in Netscape jar format (curl's `-c`/`--cookie-jar`, renamed here since `-c` means `--count`)                                          |
@@ -901,6 +924,44 @@ Prints the server certificate's subject, issuer, expiry date with days remaining
 (yellow under 30 days, orange under 15, red once expired), and its Subject
 Alternative Names. Useful for catching a certificate that is about to lapse
 before your users do.
+
+Certificate details are collected independently of verification, so `-k
+--tls-info` works and is often the fastest way to find out *why* an endpoint
+fails: you get to read the chain it is actually serving even though you cannot
+validate it. Check the SANs first - a certificate with no `subjectAltName`, or
+one that omits the hostname you requested, is the most common cause of a
+`<TLS-FAIL>` that survives pointing `--cacert` at the correct CA.
+
+### TLS verification (`-k`/`--insecure`, `--cacert`)
+
+Verification is on by default (`SSL_VERIFYPEER` and `SSL_VERIFYHOST` both set),
+matching curl. Two flags change that:
+
+```bash
+# verify against a private CA - verification stays ON
+./check-endpoint.py --cacert /etc/pki/ca-trust/source/anchors/internal.pem \
+    https://internal.corp.example/health
+
+# skip verification entirely - only when the cert is knowingly broken
+./check-endpoint.py -k https://staging.example.com/
+
+# read the chain of an endpoint you cannot validate
+./check-endpoint.py -k --tls-info https://staging.example.com/
+```
+
+Reach for `--cacert` first. It covers the common internal-endpoint case - a
+private CA the host doesn't trust - without giving up the tool's ability to
+report certificate faults. `-k` is for the narrower case where the certificate
+is known to be broken (self-signed with no SAN, expired on purpose, hostname
+deliberately mismatched) and you need the timings regardless.
+
+The two are mutually exclusive: passing both is an error rather than a silent
+preference for one, since `-k` would make a CA bundle you deliberately supplied
+do nothing. A `--cacert` path that doesn't exist is also an error, rather than
+falling back to the system store and quietly verifying against something else.
+
+See the warning under [Failure Markers](#failure-markers) for what `-k` does to
+the output.
 
 ### Response headers (`--show-headers`)
 
@@ -1015,8 +1076,19 @@ curl localhost:9109/metrics
 Each scrape runs `-c` probes (default 1), so `-c > 1` also exposes per-scrape
 total-time percentiles. Exposed series include `check_endpoint_up`, the
 per-phase `*_seconds` gauges, `check_endpoint_http_response_code`,
-`check_endpoint_response_bytes`, and (over HTTPS)
-`check_endpoint_tls_expiry_days`.
+`check_endpoint_response_bytes`, (over HTTPS) `check_endpoint_tls_expiry_days`,
+and `check_endpoint_tls_verification_disabled`.
+
+That last one is `1` when the exporter is running with `-k`. Alert on it if you
+don't expect it: with verification off, `check_endpoint_up` stays `1` against an
+endpoint whose certificate has expired or is signed by an unknown CA, and
+`check_endpoint_tls_expiry_days` describes a certificate that was never
+validated.
+
+```promql
+# an exporter is running without certificate verification
+check_endpoint_tls_verification_disabled == 1
+```
 
 **Deploying it:** a ready-to-use Docker image, Helm chart, and raw Kubernetes
 manifests live in
@@ -1110,6 +1182,22 @@ runs.
 >
 > If a marker appears on *every* row against *every* endpoint, suspect the host
 > before the network. See [Platform Notes](#platform-notes).
+
+> **`-k` removes `<TLS-FAIL>` entirely.** With verification off, the three
+> libcurl errors behind that marker - untrusted CA, certificate problem, and
+> hostname/peer verification failure - can no longer be raised, so a run against
+> an endpoint with a genuinely broken certificate produces a table that looks
+> exactly like a healthy one. A clean `-k` run has **not** shown the certificate
+> is good; it has shown nothing about the certificate at all.
+>
+> The script prints a warning to stderr on every `-k` run, sets `"insecure":
+> true` in `--json` output, and exports
+> `check_endpoint_tls_verification_disabled 1` in `--prometheus` mode, so the
+> flag is always recoverable from the artefact rather than only from the command
+> line that produced it. If you paste a `-k` table into a ticket, say so.
+>
+> Where the endpoint uses a private CA, `--cacert` is the better tool: it keeps
+> verification on, so real certificate faults are still reported.
 
 ---
 
