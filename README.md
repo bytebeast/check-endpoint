@@ -1,7 +1,7 @@
 # check-endpoint.py
 
 <p align="center">
-  <img alt="Version" src="https://img.shields.io/badge/Version-2.4.0-89b4fa?style=flat">
+  <img alt="Version" src="https://img.shields.io/badge/Version-2.5.0-89b4fa?style=flat">
   <img alt="Status" src="https://img.shields.io/badge/Status-beta-f9e2af?style=flat">
   <a href="https://github.com/bytebeast/check-endpoint/blob/main/LICENSE"><img alt="License" src="https://img.shields.io/badge/License-MIT-a6e3a1?style=flat"></a>
   <a href="https://www.python.org/downloads/"><img alt="Python" src="https://img.shields.io/badge/Python-3.9+-cba6f7?style=flat"></a>

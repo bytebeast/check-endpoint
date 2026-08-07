@@ -1,5 +1,17 @@
 # Changelog
 
+## v2.5.0 (2026-08-07)
+
+### Features
+
+- **check-endpoint.py **: add insecure tls support (AH-2026080797082)
+
+### Documentation
+
+- **README.md**: update install/platform notes (AH-2026080683293)
+
+<!-- also in this release: chore, ci -->
+
 ## v2.4.0 (2026-08-02)
 
 ### Features
