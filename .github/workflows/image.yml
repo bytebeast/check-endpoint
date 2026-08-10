@@ -55,7 +55,31 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Tags are derived from the git ref, so the version handoff from
+      # Single source of truth for the version is APP_VERSION in the script -
+      # the same value .github/scripts/release.py bumps and release.yml turns
+      # into the git tag. Reading it here lets main builds carry a
+      # version-bearing tag, and lets a release build fail loudly if the tag
+      # and the file disagree.
+      - name: Read APP_VERSION
+        id: ver
+        run: |
+          version=$(sed -n 's/^APP_VERSION *= *"\(.*\)"/\1/p' check-endpoint.py)
+          if [ -z "$version" ]; then
+            echo "::error::could not read APP_VERSION from check-endpoint.py"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "APP_VERSION is $version" >> "$GITHUB_STEP_SUMMARY"
+
+          # On a tag build the two must agree. If they don't, something tagged
+          # a commit whose script says otherwise, and the image would be
+          # labelled with a version it doesn't contain.
+          if [ "$GITHUB_REF_TYPE" = "tag" ] && [ "$GITHUB_REF_NAME" != "v$version" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match APP_VERSION $version"
+            exit 1
+          fi
+
+      # Release tags are derived from the git ref, so the version handoff from
       # release.yml is the tag itself - nothing needs to be passed between
       # workflows.
       #
@@ -78,6 +102,10 @@ jobs:
             type=edge,branch=main
             type=ref,event=pr
             type=sha,format=short
+            # Main builds between releases: the version currently in the
+            # script, suffixed so it can never be mistaken for the released
+            # image of that version and never overwrites it.
+            type=raw,value=${{ steps.ver.outputs.version }}-dev.{{sha}},enable={{is_default_branch}}
 
       - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:

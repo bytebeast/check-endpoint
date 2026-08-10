@@ -13,35 +13,95 @@
 # releasable commits. Without that ordering the two race, and `prepare` would
 # compute the same version a second time and open a duplicate PR.
 #
-# Needs .github/scripts/release.py. No third-party actions; `gh` is
-# preinstalled.
- 
+# ── Why this uses a GitHub App token ──────────────────────────────────────
+#
+# GITHUB_TOKEN cannot do either half of this job:
+#
+#   1. It is barred from createPullRequest by policy, regardless of
+#      `permissions:`. That surfaces as "GitHub Actions is not permitted to
+#      create or approve pull requests". There is a repo setting that lifts
+#      this, but see (2) before reaching for it.
+#
+#   2. Anything GITHUB_TOKEN does - opening a PR, pushing a tag -
+#      deliberately does NOT trigger further workflows, to prevent recursion.
+#      Two consequences here:
+#        - main requires code scanning results, so a GITHUB_TOKEN-authored PR
+#          would open, never run CodeQL, and sit unmergeable forever.
+#        - the tag pushed below would be inert, so image.yml would never build
+#          a version-tagged container. That is why only `edge` and `sha-`
+#          images appear.
+#
+# An App installation token is subject to neither restriction. The App needs
+# Contents: read & write and Pull requests: read & write on this repository.
+# Set vars.RELEASE_APP_ID and secrets.RELEASE_APP_PRIVATE_KEY.
+#
+# actions/create-github-app-token is published by GitHub under the `actions`
+# org. Needs .github/scripts/release.py; `gh` is preinstalled.
+
 name: release
- 
+
 on:
   push:
     branches: [main]
   workflow_dispatch:
- 
+
 permissions: {}
- 
+
 concurrency:
   group: release
   cancel-in-progress: false
- 
+
 jobs:
   # ── tag whatever version is currently committed ───────────────────────────
   tag:
     name: Tag the released version
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: read # the App token does the writing
     steps:
-      # persist-credentials stays on: this job pushes a tag.
+      # vars.* resolve to "" when undefined rather than failing, so a missing
+      # App ID surfaces as an opaque Octokit error ("appId option is
+      # required") instead of a workflow error. Check it where the message is
+      # useful.
+      - name: Check App credentials are present
+        env:
+          APP_ID: ${{ vars.RELEASE_APP_ID }}
+          PRIVATE_KEY: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+        run: |
+          # App IDs are not secret, so printing this is safe and saves a round trip.
+          echo "app id seen by the workflow: '${APP_ID}'"
+          echo "private key length: ${#PRIVATE_KEY}"
+
+          if [ -z "$APP_ID" ]; then
+            echo "::error::vars.RELEASE_APP_ID is empty. Check Settings → Secrets and variables → Actions → Variables (not the Secrets tab)."
+            exit 1
+          fi
+          if [ -z "$PRIVATE_KEY" ]; then
+            echo "::error::secrets.RELEASE_APP_PRIVATE_KEY is empty."
+            exit 1
+          fi
+          if [ "${#PRIVATE_KEY}" -lt 1000 ]; then
+            echo "::error::RELEASE_APP_PRIVATE_KEY looks truncated (${#PRIVATE_KEY} chars). Paste the whole .pem, including the BEGIN/END lines."
+            exit 1
+          fi
+
+      - uses: actions/create-github-app-token@v2
+        id: app-token
+        with:
+          app-id: ${{ vars.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          # Scope the minted token below whatever the App installation grants.
+          # This job only pushes a tag; it has no business opening PRs.
+          permission-contents: write
+
+      # persist-credentials stays on: this job pushes a tag. The App token is
+      # what gets persisted, so the tag push is attributed to the App and DOES
+      # trigger image.yml's `push: tags: [v*]`.
       - uses: actions/checkout@v4 # zizmor: ignore[artipacked]
         with:
           fetch-depth: 0
- 
+          token: ${{ steps.app-token.outputs.token }}
+
       # Detection is by tag existence, not by commit message. The subject of a
       # merged release PR depends on whether you squash, rebase or merge, so
       # matching on "chore(release):" would work for two of the three and fail
@@ -54,36 +114,70 @@ jobs:
             exit 1
           fi
           tag="v$version"
- 
+
           if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
             echo "$tag already exists, nothing to do"
             exit 0
           fi
- 
+
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git tag -a "$tag" -m "$tag"
           git push origin "$tag"
           echo "created $tag" >> "$GITHUB_STEP_SUMMARY"
- 
+
   # ── open the next release PR ──────────────────────────────────────────────
   prepare:
     name: Open release PR
     needs: tag
     runs-on: ubuntu-latest
     permissions:
-      contents: write
-      pull-requests: write
+      contents: read # the App token does the writing
     steps:
+      # Same guard as the tag job - see the comment there.
+      - name: Check App credentials are present
+        env:
+          APP_ID: ${{ vars.RELEASE_APP_ID }}
+          PRIVATE_KEY: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+        run: |
+          echo "app id seen by the workflow: '${APP_ID}'"
+          echo "private key length: ${#PRIVATE_KEY}"
+
+          if [ -z "$APP_ID" ]; then
+            echo "::error::vars.RELEASE_APP_ID is empty. Check Settings → Secrets and variables → Actions → Variables (not the Secrets tab)."
+            exit 1
+          fi
+          if [ -z "$PRIVATE_KEY" ]; then
+            echo "::error::secrets.RELEASE_APP_PRIVATE_KEY is empty."
+            exit 1
+          fi
+          if [ "${#PRIVATE_KEY}" -lt 1000 ]; then
+            echo "::error::RELEASE_APP_PRIVATE_KEY looks truncated (${#PRIVATE_KEY} chars). Paste the whole .pem, including the BEGIN/END lines."
+            exit 1
+          fi
+
+      - uses: actions/create-github-app-token@v2
+        id: app-token
+        with:
+          app-id: ${{ vars.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          # contents for the branch push, pull-requests for `gh pr create`.
+          # Nothing else the App may be installed with is exposed here.
+          permission-contents: write
+          permission-pull-requests: write
+
       # persist-credentials stays on: this job pushes the release branch.
       - uses: actions/checkout@v4 # zizmor: ignore[artipacked]
         with:
           fetch-depth: 0
- 
+          token: ${{ steps.app-token.outputs.token }}
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
- 
+
+      # release.py writes version/tag/files to $GITHUB_OUTPUT itself and exits
+      # 2 when there is nothing to release.
       - name: Work out the next version
         id: bump
         run: |
@@ -97,47 +191,86 @@ jobs:
           fi
           [ "$rc" -eq 0 ] || exit "$rc"
           echo "release=true" >> "$GITHUB_OUTPUT"
- 
+
+      # Fail loudly if release.py exited 0 without populating its outputs.
+      # Otherwise TAG is empty, the branch becomes a bare "release/", and the
+      # resulting mess looks like a permissions problem rather than a bug here.
+      - name: Check release.py produced its outputs
+        if: steps.bump.outputs.release == 'true'
+        env:
+          TAG: ${{ steps.bump.outputs.tag }}
+          VERSION: ${{ steps.bump.outputs.version }}
+          FILES: ${{ steps.bump.outputs.files }}
+        run: |
+          for v in TAG VERSION FILES; do
+            if [ -z "${!v}" ]; then
+              echo "::error::release.py exited 0 but did not set $v"
+              exit 1
+            fi
+          done
+
       - name: Push the branch and open the PR
         if: steps.bump.outputs.release == 'true'
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           TAG: ${{ steps.bump.outputs.tag }}
           VERSION: ${{ steps.bump.outputs.version }}
           FILES: ${{ steps.bump.outputs.files }}
         run: |
           branch="release/$TAG"
- 
+
+          # Check for an open PR BEFORE touching the remote. A re-run that is
+          # going to exit early should not force-push over a branch someone is
+          # mid-review on - that would dismiss their approval for nothing.
+          open=$(gh pr list --head "$branch" --state open --json number --jq 'length')
+
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
- 
+
           git checkout -b "$branch"
+          # FILES is a space-separated list; the split is intentional.
+          # shellcheck disable=SC2086
           git add -- $FILES
           git commit -m "chore(release): $TAG"
- 
+
           # Force-push so a re-run updates the existing branch rather than
           # failing. The branch only ever holds generated content.
           git push --force origin "$branch"
- 
-          if gh pr list --head "$branch" --state open --json number \
-               --jq 'length' | grep -qv '^0$'; then
-            echo "a PR for $branch is already open, updated it in place"
+
+          if [ "$open" -gt 0 ]; then
+            echo "a PR for $branch is already open, updated it in place" \
+              >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
- 
+
+          # Built before the gh call so the heredoc's column-zero terminator
+          # doesn't wreck the indentation of the command below.
+          # shellcheck disable=SC2086
+          file_list=$(printf -- '- `%s`\n' $FILES)
+
+          body=$(cat <<EOF
+          Automated release prepared by \`.github/scripts/release.py\`.
+
+          Version \`$VERSION\` across:
+
+          $file_list
+
+          Merging this PR triggers the \`tag\` job, which creates \`$TAG\`,
+          which in turn triggers \`image.yml\` to publish
+          \`ghcr.io/bytebeast/check-endpoint:$VERSION\`.
+          EOF
+          )
+
           gh pr create \
             --base main \
             --head "$branch" \
             --title "chore(release): $TAG" \
-            --body "$(printf '%s\n' \
-              "Automated release prepared by \`.github/scripts/release.py\`." \
-              "" \
-              "Version \`$VERSION\` across:" \
-              "" \
-              "$(printf -- '- \`%s\`\n' $FILES)" \
-              "" \
-              "Merging this PR triggers the \`tag\` job, which creates \`$TAG\`." )"
- 
+            --body "$body"
+
+          echo "opened release PR for $TAG" >> "$GITHUB_STEP_SUMMARY"
+
           # To merge without a human, enable auto-merge on the repository and
-          # uncomment the next line. Checks still have to pass first.
+          # uncomment the next line. Checks still have to pass first - and if
+          # the ruleset requires an approving review, this will sit pending
+          # indefinitely, since an App cannot approve its own PR.
           # gh pr merge --auto --squash "$branch"
