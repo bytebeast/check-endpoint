@@ -10,6 +10,7 @@
   <a href="https://github.com/bytebeast/check-endpoint/actions/workflows/ruff.yml"><img alt="ruff" src="https://github.com/bytebeast/check-endpoint/actions/workflows/ruff.yml/badge.svg"></a>
   <a href="https://github.com/bytebeast/check-endpoint/actions/workflows/python-security.yml"><img alt="python-security" src="https://github.com/bytebeast/check-endpoint/actions/workflows/python-security.yml/badge.svg"></a>
   <a href="https://github.com/bytebeast/check-endpoint/actions/workflows/contrib-checks.yml"><img alt="contrib-checks" src="https://github.com/bytebeast/check-endpoint/actions/workflows/contrib-checks.yml/badge.svg"></a>
+  <a href="https://github.com/bytebeast/check-endpoint/actions/workflows/image.yml"><img alt="image" src="https://github.com/bytebeast/check-endpoint/actions/workflows/image.yml/badge.svg"></a>
 </p>
 
 > I originally wrote this script after discovering that curl can independently
@@ -119,6 +120,10 @@ it in ways that aren't as convenient with the curl command-line interface.
 - **Prometheus exporter mode** - `--prometheus` runs as a pull-based exporter
   daemon that re-probes on every scrape; see
   [contrib/check-endpoint-exporter](contrib/check-endpoint-exporter/README.md)
+- **Runs as a container** - a CLI image for probing from inside the network you
+  are debugging: a Kubernetes pod, a CI job, a bastion. No pycurl build
+  required; see
+  [contrib/check-endpoint-cli](contrib/check-endpoint-cli/README.md)
 
 ---
 
@@ -500,6 +505,10 @@ all agree on the minimum version.
 The general shape is the same everywhere: install the build dependencies, then
 install pycurl into a virtualenv with the SSL backend pinned.
 
+> **Or skip the build entirely.** `docker run --rm -it
+> ghcr.io/bytebeast/check-endpoint https://example.com` needs nothing installed
+> beyond Docker. See [Running in a container](#running-in-a-container).
+
 ```bash
 # Recommended: install pycurl in a pyenv virtualenv
 pyenv virtualenv 3.12.0 check-endpoint-env
@@ -717,6 +726,47 @@ the unit an absolute path to the venv's Python rather than relying on `PATH`.
 
 ---
 
+## Running in a container
+
+If you'd rather not build pycurl at all — or you need to probe from inside a
+cluster rather than from your laptop — there's a prebuilt CLI image:
+
+```bash
+# From anywhere
+docker run --rm -it ghcr.io/bytebeast/check-endpoint -c 10 --stats https://example.com
+
+# One-shot from inside a Kubernetes cluster
+kubectl run check-endpoint --rm -it --restart=Never \
+    --image=ghcr.io/bytebeast/check-endpoint \
+    -- -c 10 --stats https://my-svc.my-ns.svc.cluster.local/health
+```
+
+The image is the same script with pycurl already compiled against Debian's
+libcurl, so every platform caveat above is handled for you.
+
+Probing from inside a cluster measures a genuinely different path, which is the
+point — but two Kubernetes defaults will distort the numbers if you don't know
+about them:
+
+- **`ndots:5` inflates the `DNS` column.** Kubernetes appends cluster search
+  domains to any name with fewer than five dots, so resolving `example.com`
+  fires three NXDOMAIN round trips to CoreDNS before the real query, and all of
+  that time lands in `DNS`. The supplied debug pod sets `ndots:1`; a trailing
+  dot (`example.com.`) also bypasses it.
+- **A CPU limit throttles the prober.** A container that hits its CFS quota is
+  descheduled mid-probe, and that stall is indistinguishable from network
+  latency in the output.
+
+A long-lived debug pod manifest, a Helm-free `kubectl` recipe, and notes on
+service-mesh sidecars are in
+**[contrib/check-endpoint-cli](contrib/check-endpoint-cli/README.md)**.
+
+For scraping metrics continuously rather than running ad-hoc probes, use the
+exporter image instead — see
+[contrib/check-endpoint-exporter](contrib/check-endpoint-exporter/README.md).
+
+---
+
 ## Usage
 
 ```
@@ -812,6 +862,13 @@ the unit an absolute path to the venv's Python rather than relying on `PATH`.
 
 # Run as a Prometheus exporter that re-probes on every scrape
 ./check-endpoint.py --prometheus --prometheus-port 9109 https://example.com
+
+# Run from a container, no local pycurl needed
+docker run --rm -it ghcr.io/bytebeast/check-endpoint -c 10 --stats https://example.com
+
+# Probe from inside a Kubernetes cluster
+kubectl run check-endpoint --rm -it --restart=Never \
+    --image=ghcr.io/bytebeast/check-endpoint -- --tls-info https://example.com
 
 # Send a literal cookie (curl -b style)
 ./check-endpoint.py -b "session=abc123; theme=dark" https://example.com
