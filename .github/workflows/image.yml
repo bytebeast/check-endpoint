@@ -1,0 +1,97 @@
+# .github/workflows/image.yml
+#
+# Builds the CLI image and publishes it to GitHub Container Registry.
+#
+# Unlike createPullRequest (see release.yml), pushing packages is NOT blocked
+# for GITHUB_TOKEN - `packages: write` is all that's needed, no App token.
+#
+# FIRST PUSH ONLY: the package is created private. Make it public at
+#   https://github.com/users/bytebeast/packages/container/check-endpoint/settings
+# otherwise every cluster pulling it needs an imagePullSecret.
+
+name: image
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    paths:
+      - "check-endpoint.py"
+      - "contrib/check-endpoint-cli/**"
+      - ".github/workflows/image.yml"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: image-${{ github.ref }}
+  # Cancel superseded PR builds, but never cancel a release build partway.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build:
+    name: Build and push
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      # Nothing here pushes over git - the registry push authenticates via
+      # docker login - so the job token has no reason to stay in .git/config
+      # where a later step or a workspace archive could pick it up.
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      # Needed for linux/arm64: laptops are arm64, most clusters are amd64,
+      # and one manifest should serve both.
+      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Tags are derived from the git ref, so the version handoff from
+      # release.yml is the tag itself - nothing needs to be passed between
+      # workflows.
+      #
+      #   tag v1.0.1  ->  1.0.1, 1.0, 1, latest, sha-abc1234
+      #   push main   ->  edge, sha-abc1234
+      #   PR          ->  pr-42          (built, not pushed)
+      #
+      # `latest=auto` moves `latest` only on semver tags, so it always means
+      # "newest release" rather than "tip of main". Prereleases (v1.1.0-rc1)
+      # are excluded automatically.
+      - uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
+        id: meta
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/check-endpoint
+          flavor: latest=auto
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=edge,branch=main
+            type=ref,event=pr
+            type=sha,format=short
+
+      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          file: contrib/check-endpoint-cli/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          # Build on PRs to catch breakage, but only publish from main and tags.
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          # Surfaces as org.opencontainers.image.version on the image, so
+          # `docker inspect` answers "which release is this?" without
+          # reading the tag.
+          build-args: |
+            APP_VERSION=${{ steps.meta.outputs.version }}

@@ -1,25 +1,24 @@
-
 # .github/workflows/sync-check.yml
 #
-# Fails the build when the exporter's copy of check-endpoint.py drifts from the
-# one at the repo root. No Python, no dependencies, just diff.
- 
+# Fails the build when a contrib copy of check-endpoint.py drifts from the one
+# at the repo root. No Python, no dependencies, just diff.
+
 name: sync-check
- 
+
 on:
   push:
     branches: [main]
   pull_request:
   workflow_dispatch:
- 
+
 # Without this block the job inherits the repository default, which may be
 # read/write. This workflow only reads files.
 permissions:
   contents: read
- 
+
 jobs:
   contrib-copy:
-    name: contrib copy is in sync
+    name: contrib copies are in sync
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -28,22 +27,40 @@ jobs:
           # can be picked up by anything that later archives the workspace.
           # Nothing here needs to push.
           persist-credentials: false
- 
-      - name: Compare contrib copy against the root copy
+
+      - name: Compare contrib copies against the root copy
         run: |
           root="check-endpoint.py"
-          copy="contrib/check-endpoint-exporter/check-endpoint.py"
- 
-          for f in "$root" "$copy"; do
-            if [ ! -f "$f" ]; then
-              echo "::error::expected $f to exist"
-              exit 1
-            fi
-          done
- 
-          if diff -u "$root" "$copy"; then
-            echo "$copy matches $root"
-          else
-            echo "::error file=$copy::This copy has drifted from $root. Sync it with: cp $root $copy"
+
+          # Every contrib copy that must stay byte-identical to the root script.
+          #copies=(
+          #  "contrib/check-endpoint-exporter/check-endpoint.py"
+          #  "contrib/check-endpoint-cli/check-endpoint.py"
+          #)
+          mapfile -t copies < <(find contrib -name check-endpoint.py | sort)
+
+          if [ ! -f "$root" ]; then
+            echo "::error::expected $root to exist"
             exit 1
           fi
+
+          # Check every copy before failing, so one run reports all the drift
+          # rather than making you fix them one push at a time.
+          failed=0
+
+          for copy in "${copies[@]}"; do
+            if [ ! -f "$copy" ]; then
+              echo "::error file=$copy::expected $copy to exist"
+              failed=1
+              continue
+            fi
+
+            if diff -u "$root" "$copy"; then
+              echo "$copy matches $root"
+            else
+              echo "::error file=$copy::This copy has drifted from $root. Sync it with: cp $root $copy"
+              failed=1
+            fi
+          done
+
+          exit "$failed"
