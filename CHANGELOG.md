@@ -1,5 +1,14 @@
 # Changelog
 
+## v2.7.1 (2026-08-10)
+
+### Bug Fixes
+
+- **release**: ensure image have semantic ver tag (AH-2026081080303)
+- **release**: noop retrigger (AH-2026081091253)
+
+<!-- also in this release: revert -->
+
 ## v2.7.0 (2026-08-10)
 
 ### Features
