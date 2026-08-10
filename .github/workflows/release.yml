@@ -163,8 +163,8 @@ jobs:
           private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
           # contents for the branch push, pull-requests for `gh pr create`.
           # Nothing else the App may be installed with is exposed here.
-          permission-contents: write
-          permission-pull-requests: write
+          #permission-contents: write
+          #permission-pull-requests: write
 
       # persist-credentials stays on: this job pushes the release branch.
       - uses: actions/checkout@v4 # zizmor: ignore[artipacked]
