@@ -1,5 +1,21 @@
 # Changelog
 
+## v2.6.0 (2026-08-10)
+
+### Features
+
+- **check-endpoint-cli**: add check-endpoint-cli... (AH-2026081021585)
+- **release.py **: add contrib cli to release (AH-2026081047341)
+
+### Bug Fixes
+
+- **image & contrib-checks**: pin actions and... (AH-2026081031648)
+- **debug-pod **: add security context (AH-2026081039924)
+
+### Documentation
+
+- **README**: update readme with check-endpoint-cli... (AH-2026081054969)
+
 ## v2.5.1 (2026-08-07)
 
 ### Bug Fixes
