@@ -61,6 +61,10 @@ VERSION_FILES = [
         re.compile(r'(?m)^APP_VERSION\s*=\s*"(?P<version>[0-9]+\.[0-9]+\.[0-9]+)"'),
     ),
     (
+        "contrib/check-endpoint-cli/check-endpoint.py",
+        re.compile(r'(?m)^APP_VERSION\s*=\s*"(?P<version>[0-9]+\.[0-9]+\.[0-9]+)"'),
+    ),
+    (
         "README.md",
         re.compile(r"Version-(?P<version>[0-9]+\.[0-9]+\.[0-9]+)-"),
     ),
