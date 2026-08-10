@@ -1,0 +1,102 @@
+# A long-lived debug pod. Exec into it and run check-endpoint ad hoc, the same
+# way you would on a laptop - except from inside the cluster network.
+#
+#   kubectl apply -f debug-pod.yaml
+#   kubectl exec -it check-endpoint -- bash
+#   check-endpoint -c 10 --stats https://your-service/health
+#
+# Delete it when you're done; it costs nothing but it is a shell in your
+# cluster:
+#   kubectl delete -f debug-pod.yaml
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: check-endpoint
+  labels:
+    app.kubernetes.io/name: check-endpoint
+  annotations:
+    # This is an ad-hoc debug pod, not a deployed workload: you edit the tag to
+    # whatever you are investigating with before applying it. Pinning a version
+    # here would go stale on every release and get ignored.
+    ignore-check.kube-linter.io/latest-tag: >-
+      debug pod; the operator sets the tag at apply time
+    # See the resources block below - a CPU limit throttles the prober and
+    # corrupts the very measurements this pod exists to take. (This check is
+    # currently satisfied by the CPU request alone; the ignore is here so a
+    # future kube-linter that also demands a limit doesn't break CI silently.)
+    ignore-check.kube-linter.io/unset-cpu-requirements: >-
+      CPU throttling would be measured as network latency
+    # Probes are for workloads something else depends on. This pod runs
+    # `sleep infinity` so a human can exec in; there is no service behind it,
+    # nothing routes to it, and a failed probe would restart the shell you are
+    # working in. The checks stay enabled for the exporter, which does need them.
+    ignore-check.kube-linter.io/no-liveness-probe: >-
+      interactive debug pod, nothing depends on its health
+    ignore-check.kube-linter.io/no-readiness-probe: >-
+      interactive debug pod, no Service routes to it
+spec:
+  restartPolicy: Never
+  terminationGracePeriodSeconds: 1
+
+  # ── ndots ────────────────────────────────────────────────────────────────
+  # Kubernetes defaults to ndots:5, which makes the DNS column measure the
+  # wrong thing. Any name with fewer than five dots - i.e. nearly every real
+  # hostname - is first tried against each cluster search domain:
+  #
+  #   example.com.<namespace>.svc.cluster.local   NXDOMAIN
+  #   example.com.svc.cluster.local               NXDOMAIN
+  #   example.com.cluster.local                   NXDOMAIN
+  #   example.com                                 finally, the real answer
+  #
+  # Those three failed round trips to CoreDNS land inside the measured DNS
+  # time, so an external endpoint looks far slower to resolve than it is.
+  # ndots:1 skips them. Drop this block if you are deliberately measuring what
+  # an in-cluster workload experiences, since your apps have ndots:5 too.
+  dnsConfig:
+    options:
+      - name: ndots
+        value: "1"
+
+  containers:
+    - name: check-endpoint
+      image: ghcr.io/bytebeast/check-endpoint:latest
+      imagePullPolicy: Always
+
+      # Keep the pod alive so you can exec in repeatedly. The image's entrypoint
+      # runs the probe once and exits, which is what you want for a Job (see
+      # the README) but not for interactive use.
+      command: ["sleep", "infinity"]
+
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        runAsNonRoot: true
+        runAsUser: 10001
+        capabilities:
+          drop: ["ALL"]
+        seccompProfile:
+          type: RuntimeDefault
+
+      # ── no CPU limit, on purpose ─────────────────────────────────────────
+      # A CPU limit means CFS throttling, and a throttled process gets
+      # descheduled mid-probe. That delay is indistinguishable from network
+      # latency in the output: you would be measuring your own quota, not the
+      # endpoint. A memory limit is fine - memory pressure doesn't skew
+      # timings, it just kills you.
+      resources:
+        requests:
+          cpu: 50m
+          memory: 64Mi
+        limits:
+          memory: 256Mi
+
+      volumeMounts:
+        # readOnlyRootFilesystem is on, so give the tool somewhere to write.
+        # Needed for --cookie-jar and --export; harmless otherwise.
+        - name: tmp
+          mountPath: /tmp
+
+  volumes:
+    - name: tmp
+      emptyDir: {}
