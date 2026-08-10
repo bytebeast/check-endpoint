@@ -62,7 +62,13 @@ RUN apt-get update \
 COPY --from=builder /wheels /wheels
 RUN pip install --no-cache-dir --no-index --find-links=/wheels \
         "pycurl==${PYCURL_VERSION}" \
-    && rm -rf /wheels
+    && rm -rf /wheels \
+    # pip exists only to place that wheel. Nothing at runtime uses it, it
+    # carries CVEs of its own (CVE-2025-8869, CVE-2026-6357, CVE-2026-3219,
+    # CVE-2026-8643), and removing it also removes the only package-install
+    # path inside a container that is otherwise read-only. `python -m ensurepip`
+    # brings it back if you ever need it interactively.
+    && pip uninstall --yes pip setuptools wheel
 
 # Installed on PATH under its own name so an interactive session can type
 # `check-endpoint https://...` exactly as you would on a laptop, rather than
