@@ -26,14 +26,23 @@ name: contrib-checks
 on:
   push:
     branches: [main]
-    paths: &paths
+    # Kept literally identical to the pull_request list below. A YAML anchor
+    # would guarantee that, but zizmor cannot follow anchors and downgrades its
+    # analysis of the whole file when it sees one, so the duplication is
+    # deliberate.
+    paths:
       - "contrib/**"
       - ".github/workflows/contrib-checks.yml"
       - ".hadolint.yaml"
       - ".yamllint.yaml"
       - ".kube-linter.yaml"
   pull_request:
-    paths: *paths
+    paths:
+      - "contrib/**"
+      - ".github/workflows/contrib-checks.yml"
+      - ".hadolint.yaml"
+      - ".yamllint.yaml"
+      - ".kube-linter.yaml"
   workflow_dispatch:
 
 permissions:
