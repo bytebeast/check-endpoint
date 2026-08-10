@@ -39,6 +39,18 @@ spec:
   restartPolicy: Never
   terminationGracePeriodSeconds: 1
 
+  # Pod-level security context. The container sets its own below, but Trivy's
+  # KSV-0118 checks this level too: an empty spec.securityContext is treated as
+  # "default", i.e. root-capable, regardless of what the container overrides.
+  # runAsGroup is above 10000 to stay clear of host GIDs (KSV-0021).
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 10001
+    runAsGroup: 10001
+    fsGroup: 10001
+    seccompProfile:
+      type: RuntimeDefault
+
   # ── ndots ────────────────────────────────────────────────────────────────
   # Kubernetes defaults to ndots:5, which makes the DNS column measure the
   # wrong thing. Any name with fewer than five dots - i.e. nearly every real
