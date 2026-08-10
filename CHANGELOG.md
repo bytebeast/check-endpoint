@@ -1,5 +1,11 @@
 # Changelog
 
+## v2.7.0 (2026-08-10)
+
+### Features
+
+- **Dockerfile**: pip only need tmp, rm it (AH-2026081069166)
+
 ## v2.6.0 (2026-08-10)
 
 ### Features
