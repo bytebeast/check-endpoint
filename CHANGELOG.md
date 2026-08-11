@@ -1,5 +1,13 @@
 # Changelog
 
+## v2.7.2 (2026-08-11)
+
+### Bug Fixes
+
+- **$0 filename**: fix $0 filename in Dockerfile (AH-2026081034454)
+
+<!-- also in this release: chore -->
+
 ## v2.7.1 (2026-08-10)
 
 ### Bug Fixes
