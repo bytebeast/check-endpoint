@@ -39,6 +39,8 @@ RUN pip install --no-cache-dir --no-index --find-links=/wheels pycurl \
 
 WORKDIR /app
 COPY check-endpoint.py /app/check-endpoint.py
+RUN chmod 0755 /app/check-endpoint.py \
+    && ln -s check-endpoint.py /app/check-endpoint
 
 # Run as an unprivileged user.
 RUN useradd --system --uid 10001 --no-create-home exporter

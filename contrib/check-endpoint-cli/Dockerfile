@@ -73,8 +73,10 @@ RUN pip install --no-cache-dir --no-index --find-links=/wheels \
 # Installed on PATH under its own name so an interactive session can type
 # `check-endpoint https://...` exactly as you would on a laptop, rather than
 # `python /app/check-endpoint.py`.
-COPY check-endpoint.py /usr/local/bin/check-endpoint
-RUN chmod 0755 /usr/local/bin/check-endpoint
+WORKDIR /usr/local/bin
+COPY check-endpoint.py /usr/local/bin/check-endpoint.py
+RUN chmod 0755 /usr/local/bin/check-endpoint.py \
+    && ln -s check-endpoint.py /usr/local/bin/check-endpoint
 
 # Colour is auto-disabled when stdout is not a TTY, so this only has an effect
 # under `docker run -it` or `kubectl exec -it`. Piping still gives clean text.
