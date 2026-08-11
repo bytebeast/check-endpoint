@@ -1973,7 +1973,7 @@ def serve_prometheus(bind, port, url, probe_fn):
 
 def main():
     parser = argparse.ArgumentParser(
-        prog="check-endpoint.py",
+        prog=os.path.basename(sys.argv[0]),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         description=(
             "check-endpoint.py: live per-phase HTTP timing probe, curl-style.\n\n"
