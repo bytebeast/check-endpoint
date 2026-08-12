@@ -45,6 +45,9 @@ ARG PYCURL_VERSION
 # exec'd into a pod, having dig and curl on hand to cross-check the probe is
 # often worth the megabytes:
 #   --build-arg EXTRA_PACKAGES="dnsutils curl iputils-ping"
+#   --build-arg EXTRA_PACKAGES="ping netcat openssl"
+#   --build-arg EXTRA_PACKAGES="mtr traceroute jq yq"
+
 ARG EXTRA_PACKAGES=""
 
 # libcurl4        - required by pycurl at runtime
