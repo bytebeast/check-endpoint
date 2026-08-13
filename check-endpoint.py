@@ -68,7 +68,7 @@ except ImportError:
     sys.exit(1)
 
 
-APP_VERSION = "2.7.2"
+APP_VERSION = "2.8.0"
 DEFAULT_USER_AGENT = f"check-endpoint/{APP_VERSION}"
 
 # Sent on every request unless the caller supplies their own Accept header
@@ -2185,13 +2185,16 @@ class CaptureWriter:
             libcurl_ver = pycurl.version
         except Exception:
             libcurl_ver = "unknown"
-        py_ver = "%d.%d.%d" % sys.version_info[:3]
+        ver = sys.version_info
+        py_ver = f"{ver.major}.{ver.minor}.{ver.micro}"
+
+        started_utc = self.started.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
         lines = [
             "# check-endpoint capture session",
             "",
             f"started-local:   {self.started.strftime('%Y-%m-%d %H:%M:%S %Z').strip()}",
-            f"started-utc:     {self.started.astimezone(UTC).strftime('%Y-%m-%dT%H:%M:%SZ')}",
+            f"started-utc:     {started_utc}",
             f"pid:             {os.getpid()}",
             f"host:            {socket.gethostname()}",
             f"cwd:             {os.getcwd()}",
@@ -2269,6 +2272,9 @@ class CaptureWriter:
         else:
             outcome = "OK"
 
+        code = res.get("code")
+        verified = "no (-k/--insecure)" if res.get("insecure") else "yes"
+
         out = [
             "# check-endpoint capture",
             "",
@@ -2277,10 +2283,10 @@ class CaptureWriter:
             f"captured-at:     {datetime.now(UTC).strftime('%Y-%m-%dT%H:%M:%S.%fZ')}",
             f"url:             {self.url}",
             f"ip:              {res.get('ip') or '-'}",
-            f"http-code:       {res.get('code') if res.get('code') is not None else '-'}",
+            f"http-code:       {code if code is not None else '-'}",
             f"proto:           {res.get('proto') or '-'}",
             f"bytes:           {res['bytes'] if res.get('bytes') is not None else '-'}",
-            f"tls-verified:    {'no (-k/--insecure)' if res.get('insecure') else 'yes'}",
+            f"tls-verified:    {verified}",
         ]
         if res.get("errno") is not None:
             out.append(f"curl-errno:      {res['errno']}")

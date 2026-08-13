@@ -512,10 +512,9 @@ all agree on the minimum version.
 The general shape is the same everywhere: install the build dependencies, then
 install pycurl into a virtualenv with the SSL backend pinned.
 
-> **Or skip the build entirely.**
-> `docker run --rm -it ghcr.io/bytebeast/check-endpoint https://example.com`
-> needs nothing installed beyond Docker. See
-> [Running in a container](#running-in-a-container).
+> **Or skip the build entirely.** `docker run --rm -it
+> ghcr.io/bytebeast/check-endpoint https://example.com` needs nothing installed
+> beyond Docker. See [Running in a container](#running-in-a-container).
 
 ```bash
 # Recommended: install pycurl in a pyenv virtualenv
@@ -548,8 +547,8 @@ python3 -c 'import pycurl; print(pycurl.version)'
 ```
 
 That prints the libcurl version **and** its TLS backend on one line. If it
-prints without error, the backends matched and the script will run. Then confirm
-HTTP/2 support if you plan to use `--http2`:
+prints without error, the backends matched and the script will run. Then
+confirm HTTP/2 support if you plan to use `--http2`:
 
 ```bash
 curl --version | grep -i HTTP2
@@ -559,15 +558,15 @@ curl --version | grep -i HTTP2
 
 ## Platform Notes
 
-| Platform                 | Packaged pycurl     | Build deps             | Platform-specific gotcha                                 |
-| ------------------------ | ------------------- | ---------------------- | -------------------------------------------------------- |
-| macOS                    | via Homebrew Python | `brew install curl`    | -                                                        |
-| Ubuntu / Debian          | `python3-pycurl`    | `libcurl4-openssl-dev` | Must not use the gnutls `-dev` variant                   |
-| RHEL / Rocky / AlmaLinux | `python3-pycurl`    | `libcurl-devel`        | FIPS mode restricts ciphers; RHEL 8 needs a newer Python |
-| CentOS Stream 9/10       | `python3-pycurl`    | `libcurl-devel`        | CentOS Linux 7 is EOL - see below                        |
-| Amazon Linux 2023        | -                   | `libcurl-devel`        | Conflicts with `libcurl-minimal`; needs a swap first     |
-| Alpine                   | `py3-pycurl`        | `curl-dev`, `musl-dev` | No CA bundle by default; musl resolver differs           |
-| FreeBSD                  | `py311-pycurl`      | `curl` package         | No CA bundle **and** no curl in base                     |
+| Platform | Packaged pycurl | Build deps | Platform-specific gotcha |
+| --- | --- | --- | --- |
+| macOS | via Homebrew Python | `brew install curl` | - |
+| Ubuntu / Debian | `python3-pycurl` | `libcurl4-openssl-dev` | Must not use the gnutls `-dev` variant |
+| RHEL / Rocky / AlmaLinux | `python3-pycurl` | `libcurl-devel` | FIPS mode restricts ciphers; RHEL 8 needs a newer Python |
+| CentOS Stream 9/10 | `python3-pycurl` | `libcurl-devel` | CentOS Linux 7 is EOL - see below |
+| Amazon Linux 2023 | - | `libcurl-devel` | Conflicts with `libcurl-minimal`; needs a swap first |
+| Alpine | `py3-pycurl` | `curl-dev`, `musl-dev` | No CA bundle by default; musl resolver differs |
+| FreeBSD | `py311-pycurl` | `curl` package | No CA bundle **and** no curl in base |
 
 ### macOS
 
@@ -594,8 +593,8 @@ sudo apt install -y python3-venv python3-dev build-essential \
 `libcurl4-openssl-dev`, `libcurl4-gnutls-dev` and `libcurl4-nss-dev`. The
 runtime `libcurl4` is linked against OpenSSL, so installing the gnutls or nss
 variant produces a build that compiles cleanly and then fails at import with a
-backend mismatch. If one of the others is already present,
-`apt install libcurl4-openssl-dev` will offer to remove it - let it.
+backend mismatch. If one of the others is already present, `apt install
+libcurl4-openssl-dev` will offer to remove it - let it.
 
 ### RHEL / Rocky Linux / AlmaLinux / CentOS Stream
 
@@ -652,8 +651,8 @@ one step if you'd rather not swap explicitly.
 
 - The default `python3` is 3.9, which satisfies the floor. `python3.11` is
   available if you want something newer.
-- Both the minimal and full libcurl are built against OpenSSL 3 with nghttp2, so
-  `--http2` works either way.
+- Both the minimal and full libcurl are built against OpenSSL 3 with nghttp2,
+  so `--http2` works either way.
 - **Amazon Linux 2** (the older one) ships Python 3.7 and a much older curl.
   Treat it like CentOS 7 above.
 
@@ -697,30 +696,30 @@ pkg install -y python311 py311-pip curl ca_root_nss
 
 Two things are missing from the base system:
 
-1. **No CA bundle.** FreeBSD base ships no trust store, so without `ca_root_nss`
-   every HTTPS request fails verification. The bundle lands at
+1. **No CA bundle.** FreeBSD base ships no trust store, so without
+   `ca_root_nss` every HTTPS request fails verification. The bundle lands at
    `/usr/local/etc/ssl/cert.pem`.
 2. **No curl.** Base has `fetch`, not curl. Both `curl-config` (needed to build
    pycurl) and the runtime libcurl come from the `curl` package - FreeBSD
    doesn't split out a separate `-devel` package.
 
 **Shebang:** the script uses `#!/usr/bin/env python3`, but FreeBSD installs
-interpreters to `/usr/local/bin` as versioned binaries, and
-`pkg install python311` alone does not create a plain `python3`. Either
-`pkg install python3` (the meta port that provides the symlink), or invoke it
-explicitly as `python3.11 ./check-endpoint.py`.
+interpreters to `/usr/local/bin` as versioned binaries, and `pkg install
+python311` alone does not create a plain `python3`. Either `pkg install python3`
+(the meta port that provides the symlink), or invoke it explicitly as
+`python3.11 ./check-endpoint.py`.
 
 ### CA bundle locations
 
 Useful when a `<TLS-FAIL>` needs to be traced to the client rather than the
 endpoint:
 
-| Platform                     | Path                                 | Package           |
-| ---------------------------- | ------------------------------------ | ----------------- |
-| Debian / Ubuntu              | `/etc/ssl/certs/ca-certificates.crt` | `ca-certificates` |
-| RHEL / Rocky / Alma / AL2023 | `/etc/pki/tls/certs/ca-bundle.crt`   | `ca-certificates` |
-| Alpine                       | `/etc/ssl/certs/ca-certificates.crt` | `ca-certificates` |
-| FreeBSD                      | `/usr/local/etc/ssl/cert.pem`        | `ca_root_nss`     |
+| Platform | Path | Package |
+| --- | --- | --- |
+| Debian / Ubuntu | `/etc/ssl/certs/ca-certificates.crt` | `ca-certificates` |
+| RHEL / Rocky / Alma / AL2023 | `/etc/pki/tls/certs/ca-bundle.crt` | `ca-certificates` |
+| Alpine | `/etc/ssl/certs/ca-certificates.crt` | `ca-certificates` |
+| FreeBSD | `/usr/local/etc/ssl/cert.pem` | `ca_root_nss` |
 
 If the endpoint uses a private CA rather than a public one, installing the
 system bundle won't help - point `--cacert` at your own CA file instead. That
@@ -925,8 +924,8 @@ kubectl run check-endpoint --rm -it --restart=Never \
 | `-F` / `--force-dns`                            | Disable libcurl's DNS cache and connection reuse                                                                                                                                                      |
 | `-P` / `--auto-pin`                             | Resolve once, then pin all repeats to that IP                                                                                                                                                         |
 | `-p IP` / `--pin-ip IP`                         | Pin all repeats to a specific IP address                                                                                                                                                              |
-| `-k` / `--insecure`                             | Skip TLS certificate verification (curl's `-k`). Timings stay accurate, but the whole `<TLS-FAIL>` family stops being reported - see the warning under [Failure Markers](#failure-markers)            |
-| `--cacert FILE`                                 | Verify against `FILE` instead of the system trust store. Keeps verification **on**, so use this rather than `-k` for endpoints behind a private CA. Mutually exclusive with `-k`                      |
+| `-k` / `--insecure`                             | Skip TLS certificate verification (curl's `-k`). Timings stay accurate, but the whole `<TLS-FAIL>` family stops being reported - see the warning under [Failure Markers](#failure-markers)             |
+| `--cacert FILE`                                 | Verify against `FILE` instead of the system trust store. Keeps verification **on**, so use this rather than `-k` for endpoints behind a private CA. Mutually exclusive with `-k`                       |
 | `-S` / `--stream`                               | Time the gaps between chunks as they arrive and report `CHUNKS`/`AVG_GAP`/`MAX_GAP` - for testing SSE or chunked-transfer streaming responses                                                         |
 | `-b DATA\|FILE` / `--cookie`                    | curl-style: literal cookie data (`"name=value"`) if it contains `=`, otherwise a filename to read cookies from. Also turns the cookie engine on, so `Set-Cookie` responses persist across `-c N` runs |
 | `-j FILE` / `--cookie-jar`                      | Write all cookies accumulated across every `-c N` run to `FILE` in Netscape jar format (curl's `-c`/`--cookie-jar`, renamed here since `-c` means `--count`)                                          |
@@ -946,9 +945,9 @@ kubectl run check-endpoint --rm -it --restart=Never \
 | `--capture-header NAME`                         | Capture a specific response header by name and show its value per request in that summary (repeatable, case-insensitive)                                                                              |
 | `--full-cdn`                                    | Show the full comma-chained CDN/cache headers (`x-served-by`, `x-cache`, `x-cache-hits`, `via`); by default these collapse to just the final serving hop with the chain depth noted                   |
 | `--capture-on WHEN`                             | Record full responses to disk. `WHEN` is `never` (default), `all`, `failed`, `assert`, or `error`; bare `--capture-on` means `failed`                                                                 |
-| `--capture-dir DIR`                             | Parent directory for the capture directory (default: current directory)                                                                                                                               |
-| `--capture-body-limit SIZE`                     | Max response body bytes recorded per run (default: `256K`; accepts `512`, `256K`, `1M`, `2MB`)                                                                                                        |
-| `--capture-no-body`                             | Record timings, status and headers but not the response body                                                                                                                                          |
+| `--capture-dir DIR`                             | Parent directory for the capture directory (default: current directory)                                                                                                                              |
+| `--capture-body-limit SIZE`                     | Max response body bytes recorded per run (default: `256K`; accepts `512`, `256K`, `1M`, `2MB`)                                                                                                       |
+| `--capture-no-body`                             | Record timings, status and headers but not the response body                                                                                                                                         |
 | `--capture-secrets`                             | Record the command statement verbatim; by default `Authorization`-style header values and literal `-b` cookie data are written as `<redacted>`                                                        |
 | `--prometheus`                                  | Run as a Prometheus exporter daemon; re-probes on every scrape (see [contrib](contrib/check-endpoint-exporter/README.md))                                                                             |
 | `--prometheus-port PORT`                        | Port for the `--prometheus` exporter (default: 9109)                                                                                                                                                  |
@@ -1004,8 +1003,8 @@ Prints the server certificate's subject, issuer, expiry date with days remaining
 Alternative Names. Useful for catching a certificate that is about to lapse
 before your users do.
 
-Certificate details are collected independently of verification, so
-`-k --tls-info` works and is often the fastest way to find out _why_ an endpoint
+Certificate details are collected independently of verification, so `-k
+--tls-info` works and is often the fastest way to find out *why* an endpoint
 fails: you get to read the chain it is actually serving even though you cannot
 validate it. Check the SANs first - a certificate with no `subjectAltName`, or
 one that omits the hostname you requested, is the most common cause of a
@@ -1138,34 +1137,33 @@ raw chain instead.
 
 ### Output capture (`--capture-on`)
 
-The table tells you a run failed. It doesn't tell you what came back.
-`--capture-on` writes the full response to disk - status, headers, body, and
-every phase timing - so a failure you saw once can be opened and read later
-instead of reproduced and hoped for. That matters most for the failures worth
-catching: the intermittent 502 in run 14 of 20, the response that was a `200`
-with an error page in the body, the run where `TTFB` tripled.
+The table tells you a run failed. It doesn't tell you what came back. `--capture-on`
+writes the full response to disk - status, headers, body, and every phase timing -
+so a failure you saw once can be opened and read later instead of reproduced and
+hoped for. That matters most for the failures worth catching: the intermittent 502
+in run 14 of 20, the response that was a `200` with an error page in the body, the
+run where `TTFB` tripled.
 
-> Not to be confused with `--capture-header`, which is unrelated - it only
-> tracks a named header in the end-of-run provenance summary and writes nothing
-> to disk.
+> Not to be confused with `--capture-header`, which is unrelated - it only tracks a
+> named header in the end-of-run provenance summary and writes nothing to disk.
 
 **When to record:**
 
-| `--capture-on` | Records                                                      |
-| -------------- | ------------------------------------------------------------ |
-| `never`        | Nothing. The default                                         |
+| `--capture-on` | Records                                                     |
+| -------------- | ----------------------------------------------------------- |
+| `never`        | Nothing. The default                                        |
 | `all`          | Every run                                                    |
 | `failed`       | Any request failure **or** assertion breach - the usual pick |
 | `assert`       | Assertion breaches only                                      |
 | `error`        | Transport/network failures only (`<TO>`, `<DNS-FAIL>`, ...)  |
 
-Bare `--capture-on` with no value means `failed`. With no assertions set,
-`failed` and `error` mean the same thing, since a transport failure is the only
-kind of failure there is to detect.
+Bare `--capture-on` with no value means `failed`. With no assertions set, `failed`
+and `error` mean the same thing, since a transport failure is the only kind of
+failure there is to detect.
 
-**Layout.** Each invocation creates one directory, named for when the command
-was kicked off plus the pid, so repeat runs never overwrite each other and
-concurrent probes never collide:
+**Layout.** Each invocation creates one directory, named for when the command was
+kicked off plus the pid, so repeat runs never overwrite each other and concurrent
+probes never collide:
 
 ```
 20260812142305-48213/
@@ -1236,34 +1234,31 @@ The tool exists for the numbers in the table, so capture is built so it cannot
 move them:
 
 - **Nothing is written to disk during a transfer.** The only work done while a
-  request is in flight is appending bytes to an in-memory buffer - the same
-  thing `--expect-body` already did. No `mkdir`, no `open`, no formatting, no
-  syscalls.
+  request is in flight is appending bytes to an in-memory buffer - the same thing
+  `--expect-body` already did. No `mkdir`, no `open`, no formatting, no syscalls.
 - **The directory is created before the first request.** An unwritable
   `--capture-dir`, a bad `--capture-body-limit`, or `--capture-on` combined with
-  `--prometheus` all fail immediately with exit code `2`, rather than 500 runs
-  in.
-- **Run files are written between requests**, after `libcurl` has stopped the
-  clock and every phase timer has been read off the handle. By then the timings
-  are frozen numbers in memory; no amount of subsequent I/O can change them.
-- **Body buffering is capped** (`--capture-body-limit`, default 256 KiB). Past
-  the cap the buffer does one integer comparison and returns, so capturing a 16
-  MB download doesn't become a 16 MB memcpy inside the transfer that would show
-  up as inflated `BODY_DL`. Measured on a 16.9 MB response, `BODY_DL` with and
-  without capture differs by less than run-to-run noise.
+  `--prometheus` all fail immediately with exit code `2`, rather than 500 runs in.
+- **Run files are written between requests**, after `libcurl` has stopped the clock
+  and every phase timer has been read off the handle. By then the timings are
+  frozen numbers in memory; no amount of subsequent I/O can change them.
+- **Body buffering is capped** (`--capture-body-limit`, default 256 KiB). Past the
+  cap the buffer does one integer comparison and returns, so capturing a 16 MB
+  download doesn't become a 16 MB memcpy inside the transfer that would show up as
+  inflated `BODY_DL`. Measured on a 16.9 MB response, `BODY_DL` with and without
+  capture differs by less than run-to-run noise.
 
-Writing a file does delay the _next_ request by the cost of that write. That
-shifts when run N+1 starts; it does not touch what run N+1 measures, since every
-run's phases are timed by libcurl internally from its own start. This is
-deliberately preferred over buffering every response in memory and flushing at
-the end, which would make `-c 10000` a memory problem - and it means captures
-already on disk survive a `Ctrl+C` partway through a long run.
+Writing a file does delay the *next* request by the cost of that write. That shifts
+when run N+1 starts; it does not touch what run N+1 measures, since every run's
+phases are timed by libcurl internally from its own start. This is deliberately
+preferred over buffering every response in memory and flushing at the end, which
+would make `-c 10000` a memory problem - and it means captures already on disk
+survive a `Ctrl+C` partway through a long run.
 
-One consequence worth knowing: because a run's fate isn't known until it
-finishes, responses are buffered for **every** run once capture is on, whatever
-the mode. You cannot retroactively capture a body you chose to throw away. Only
-the write is conditional. Use `--capture-no-body` if that buffering isn't worth
-it to you.
+One consequence worth knowing: because a run's fate isn't known until it finishes,
+responses are buffered for **every** run once capture is on, whatever the mode.
+You cannot retroactively capture a body you chose to throw away. Only the write is
+conditional. Use `--capture-no-body` if that buffering isn't worth it to you.
 
 #### Secrets
 
@@ -1271,11 +1266,11 @@ it to you.
 shell-quoted command. Since these files get attached to tickets and handed to
 other people - the same way this tool's table output already is - the values of
 `Authorization`-style headers (`authorization`, `x-api-key`, `x-auth-token`,
-`cookie`, and similar) and literal `-b` cookie data are written as `<redacted>`
-by default. A `-b` _filename_ is left visible, since the path is useful and the
-secret lives in the file rather than the argument. Pass `--capture-secrets` to
-record the command verbatim when the capture is staying local and exact
-reproduction matters more.
+`cookie`, and similar) and literal `-b` cookie data are written as `<redacted>` by
+default. A `-b` *filename* is left visible, since the path is useful and the secret
+lives in the file rather than the argument. Pass `--capture-secrets` to record the
+command verbatim when the capture is staying local and exact reproduction matters
+more.
 
 ### Prometheus exporter (`--prometheus`)
 
@@ -1400,7 +1395,7 @@ runs.
 > - **`-6` on a single-stack host** - `<CONN-FAIL>` on every request; IPv6 is
 >   off by default on many VPC subnets and container runtimes
 >
-> If a marker appears on _every_ row against _every_ endpoint, suspect the host
+> If a marker appears on *every* row against *every* endpoint, suspect the host
 > before the network. See [Platform Notes](#platform-notes).
 
 > **`-k` removes `<TLS-FAIL>` entirely.** With verification off, the three
@@ -1410,8 +1405,8 @@ runs.
 > exactly like a healthy one. A clean `-k` run has **not** shown the certificate
 > is good; it has shown nothing about the certificate at all.
 >
-> The script prints a warning to stderr on every `-k` run, sets
-> `"insecure": true` in `--json` output, and exports
+> The script prints a warning to stderr on every `-k` run, sets `"insecure":
+> true` in `--json` output, and exports
 > `check_endpoint_tls_verification_disabled 1` in `--prometheus` mode, so the
 > flag is always recoverable from the artefact rather than only from the command
 > line that produced it. If you paste a `-k` table into a ticket, say so.
