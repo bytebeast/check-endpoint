@@ -1,5 +1,11 @@
 # Changelog
 
+## v2.7.1 (2026-08-13)
+
+### Bug Fixes
+
+- **release**: ensure image have semantic ver tag (AH-2026081080303)
+
 ## v2.7.0 (2026-08-10)
 
 ### Features
