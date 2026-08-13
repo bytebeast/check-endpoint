@@ -117,6 +117,13 @@ it in ways that aren't as convenient with the curl command-line interface.
   final hop (the edge that actually served you) with the chain depth noted,
   making multi-hop Fastly/Varnish output readable; pass `--full-cdn` to see
   every hop in the chain
+- **Output capture** - `--capture-on` writes full responses to disk (status,
+  headers, body, and every phase timing) so a failure seen in the table can be
+  opened and read afterwards instead of re-run and hoped for. Capture every run
+  (`all`), or only the ones that matter: `failed`, `assert`, or `error`. Each
+  invocation gets its own `{YYYYMMDDHHMMSS}-{pid}/` directory containing the
+  command statement used and one file per recorded run, named for the run number
+  in the `#` column. Built so it cannot move the timings it exists to explain
 - **Prometheus exporter mode** - `--prometheus` runs as a pull-based exporter
   daemon that re-probes on every scrape; see
   [contrib/check-endpoint-exporter](contrib/check-endpoint-exporter/README.md)
@@ -860,6 +867,15 @@ exporter image instead — see
 # Force fresh connections so each run can land on a different backend
 ./check-endpoint.py -c 10 -F --server-hints https://example.com
 
+# Capture the full response of any run that fails an assertion
+./check-endpoint.py -c 20 --assert-status 200 --capture-on failed https://example.com/health
+
+# Capture every run into a chosen directory
+./check-endpoint.py -c 5 --capture-on all --capture-dir /tmp/probes https://example.com
+
+# Capture transport failures only, without the response body
+./check-endpoint.py -c 50 --capture-on error --capture-no-body https://example.com
+
 # Run as a Prometheus exporter that re-probes on every scrape
 ./check-endpoint.py --prometheus --prometheus-port 9109 https://example.com
 
@@ -928,6 +944,11 @@ kubectl run check-endpoint --rm -it --restart=Never \
 | `--server-hints`                                | After the run, print a per-request summary of server/edge/CDN/backend-identifying headers, flagging which values stay constant, vary, or change every request                                         |
 | `--capture-header NAME`                         | Capture a specific response header by name and show its value per request in that summary (repeatable, case-insensitive)                                                                              |
 | `--full-cdn`                                    | Show the full comma-chained CDN/cache headers (`x-served-by`, `x-cache`, `x-cache-hits`, `via`); by default these collapse to just the final serving hop with the chain depth noted                   |
+| `--capture-on WHEN`                             | Record full responses to disk. `WHEN` is `never` (default), `all`, `failed`, `assert`, or `error`; bare `--capture-on` means `failed`                                                                 |
+| `--capture-dir DIR`                             | Parent directory for the capture directory (default: current directory)                                                                                                                              |
+| `--capture-body-limit SIZE`                     | Max response body bytes recorded per run (default: `256K`; accepts `512`, `256K`, `1M`, `2MB`)                                                                                                       |
+| `--capture-no-body`                             | Record timings, status and headers but not the response body                                                                                                                                         |
+| `--capture-secrets`                             | Record the command statement verbatim; by default `Authorization`-style header values and literal `-b` cookie data are written as `<redacted>`                                                        |
 | `--prometheus`                                  | Run as a Prometheus exporter daemon; re-probes on every scrape (see [contrib](contrib/check-endpoint-exporter/README.md))                                                                             |
 | `--prometheus-port PORT`                        | Port for the `--prometheus` exporter (default: 9109)                                                                                                                                                  |
 | `--prometheus-bind ADDR`                        | Bind address for the `--prometheus` exporter (default: all interfaces)                                                                                                                                |
@@ -1113,6 +1134,143 @@ raw chain instead.
 ./check-endpoint.py -c 10 --server-hints --full-cdn \
     --capture-header x-backend https://example.com
 ```
+
+### Output capture (`--capture-on`)
+
+The table tells you a run failed. It doesn't tell you what came back. `--capture-on`
+writes the full response to disk - status, headers, body, and every phase timing -
+so a failure you saw once can be opened and read later instead of reproduced and
+hoped for. That matters most for the failures worth catching: the intermittent 502
+in run 14 of 20, the response that was a `200` with an error page in the body, the
+run where `TTFB` tripled.
+
+> Not to be confused with `--capture-header`, which is unrelated - it only tracks a
+> named header in the end-of-run provenance summary and writes nothing to disk.
+
+**When to record:**
+
+| `--capture-on` | Records                                                     |
+| -------------- | ----------------------------------------------------------- |
+| `never`        | Nothing. The default                                        |
+| `all`          | Every run                                                    |
+| `failed`       | Any request failure **or** assertion breach - the usual pick |
+| `assert`       | Assertion breaches only                                      |
+| `error`        | Transport/network failures only (`<TO>`, `<DNS-FAIL>`, ...)  |
+
+Bare `--capture-on` with no value means `failed`. With no assertions set, `failed`
+and `error` mean the same thing, since a transport failure is the only kind of
+failure there is to detect.
+
+**Layout.** Each invocation creates one directory, named for when the command was
+kicked off plus the pid, so repeat runs never overwrite each other and concurrent
+probes never collide:
+
+```
+20260812142305-48213/
+├── command-statement.out   # the command used, plus run metadata
+├── 3.out                   # run 3
+└── 7.out                   # run 7
+```
+
+Run files are named for the run number exactly as it appears in the table's `#`
+column, so a failing row maps straight to its file with no arithmetic. Each one
+holds the outcome, every phase timing in both human units and raw seconds (the
+raw value is the one to feed a script), status, IP, protocol, assertion results,
+cookies, response headers, and the response body written as **raw bytes** - so a
+binary or oddly-encoded payload survives byte-for-byte rather than being mangled
+into replacement characters.
+
+```
+# check-endpoint capture
+
+run:             2
+outcome:         ASSERTION-FAILED
+captured-at:     2026-08-12T14:23:06.417293Z
+url:             https://example.com/health
+ip:              93.184.216.34
+http-code:       503
+proto:           h2
+bytes:           280
+tls-verified:    yes
+
+[timings]
+dns:             4ms       (0.003902s)
+tcp-connect:     2ms       (0.001908s)
+tls-handshake:   41ms      (0.040798s)
+pre-transfer:    1ms       (0.001377s)
+1st-byte:        812ms     (0.812004s)
+body-dl:         <1ms      (0.000427s)
+total:           862ms     (0.861624s)
+redirects:       none
+
+[assertions]
+FAIL: status 503 != 200
+FAIL: ttfb 812ms > 300ms
+
+[response-headers]
+HTTP/2 503
+content-type: application/json
+...
+
+[response-body] (280 bytes shown)
+{"error":"upstream unavailable"}
+```
+
+```bash
+# capture whatever fails, across 20 runs
+./check-endpoint.py -c 20 --assert-status 200 --max-ttfb 300ms \
+    --capture-on failed https://example.com/health
+
+# capture everything into a chosen directory
+./check-endpoint.py -c 5 --capture-on all --capture-dir /tmp/probes https://example.com
+
+# transport failures only, no body (large downloads, or sensitive payloads)
+./check-endpoint.py -c 50 --capture-on error --capture-no-body https://example.com
+```
+
+#### Capture does not affect the timings
+
+The tool exists for the numbers in the table, so capture is built so it cannot
+move them:
+
+- **Nothing is written to disk during a transfer.** The only work done while a
+  request is in flight is appending bytes to an in-memory buffer - the same thing
+  `--expect-body` already did. No `mkdir`, no `open`, no formatting, no syscalls.
+- **The directory is created before the first request.** An unwritable
+  `--capture-dir`, a bad `--capture-body-limit`, or `--capture-on` combined with
+  `--prometheus` all fail immediately with exit code `2`, rather than 500 runs in.
+- **Run files are written between requests**, after `libcurl` has stopped the clock
+  and every phase timer has been read off the handle. By then the timings are
+  frozen numbers in memory; no amount of subsequent I/O can change them.
+- **Body buffering is capped** (`--capture-body-limit`, default 256 KiB). Past the
+  cap the buffer does one integer comparison and returns, so capturing a 16 MB
+  download doesn't become a 16 MB memcpy inside the transfer that would show up as
+  inflated `BODY_DL`. Measured on a 16.9 MB response, `BODY_DL` with and without
+  capture differs by less than run-to-run noise.
+
+Writing a file does delay the *next* request by the cost of that write. That shifts
+when run N+1 starts; it does not touch what run N+1 measures, since every run's
+phases are timed by libcurl internally from its own start. This is deliberately
+preferred over buffering every response in memory and flushing at the end, which
+would make `-c 10000` a memory problem - and it means captures already on disk
+survive a `Ctrl+C` partway through a long run.
+
+One consequence worth knowing: because a run's fate isn't known until it finishes,
+responses are buffered for **every** run once capture is on, whatever the mode.
+You cannot retroactively capture a body you chose to throw away. Only the write is
+conditional. Use `--capture-no-body` if that buffering isn't worth it to you.
+
+#### Secrets
+
+`command-statement.out` records the invocation as a copy-pasteable, correctly
+shell-quoted command. Since these files get attached to tickets and handed to
+other people - the same way this tool's table output already is - the values of
+`Authorization`-style headers (`authorization`, `x-api-key`, `x-auth-token`,
+`cookie`, and similar) and literal `-b` cookie data are written as `<redacted>` by
+default. A `-b` *filename* is left visible, since the path is useful and the secret
+lives in the file rather than the argument. Pass `--capture-secrets` to record the
+command verbatim when the capture is staying local and exact reproduction matters
+more.
 
 ### Prometheus exporter (`--prometheus`)
 
