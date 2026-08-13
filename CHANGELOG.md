@@ -1,5 +1,22 @@
 # Changelog
 
+## v2.9.0 (2026-08-13)
+
+### Features
+
+- **check-endpoint.py**: add support for body capture (AH-202608128171)
+
+### Bug Fixes
+
+- **check-endpoint.py **: fix UP031 (AH-2026081213840)
+- **release**: fix release workflow (AH-2026081216284)
+
+### Documentation
+
+- **cli/dockerfile**: update EXTRA_PACKAGES comment (AH-2026081169578)
+
+<!-- also in this release: chore -->
+
 ## v2.7.2 (2026-08-11)
 
 ### Bug Fixes
