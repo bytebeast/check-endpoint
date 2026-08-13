@@ -24,6 +24,7 @@ import argparse
 import math
 import os
 import re
+import shlex
 import socket
 import statistics
 import sys
@@ -771,6 +772,7 @@ def run_once(
     cookie_jar=None,
     cookie_share=None,
     capture_cookies=False,
+    body_limit=BODY_CAPTURE_LIMIT,
 ):
     # quiet=True drives the request but writes nothing to stdout (used by
     # --prometheus mode); the collected result dict is returned either way so
@@ -815,10 +817,20 @@ def run_once(
     body_buf = bytearray()
 
     def _write_cb(chunk):
+        # HOT PATH - runs for every chunk while libcurl's phase timers are
+        # still live. Everything here has to stay O(1)-ish and syscall-free,
+        # or the cost lands in BODY_DL/TOTAL_TIME and the tool ends up
+        # measuring itself. In particular: no disk I/O, no formatting, no
+        # timestamps beyond the -S counter that is the point of -S.
         if stream_mode:
             chunk_times.append(time.perf_counter())
-        if capture_body and len(body_buf) < BODY_CAPTURE_LIMIT:
-            body_buf.extend(chunk[: BODY_CAPTURE_LIMIT - len(body_buf)])
+        if capture_body:
+            buffered = len(body_buf)
+            if buffered < body_limit:
+                room = body_limit - buffered
+                # Slicing copies. Only pay for it on the one chunk that
+                # straddles the limit; every earlier chunk extends directly.
+                body_buf.extend(chunk if len(chunk) <= room else chunk[:room])
         return len(chunk)
 
     curl.setopt(curl.WRITEFUNCTION, _write_cb)
@@ -1968,6 +1980,439 @@ def serve_prometheus(bind, port, url, probe_fn):
         httpd.server_close()
 
 
+# ── output capture ────────────────────────────────────────────────────────────
+#
+# Writes the full response (status, headers, body) plus this tool's own
+# measurements to disk, one file per recorded run, so a failure seen in the
+# table can be opened and read afterwards instead of re-run and hoped for.
+#
+# LATENCY SAFETY - the whole point of this tool is the timing numbers, so
+# capture is built so it cannot move them:
+#
+#   1. The capture directory and command-statement.out are created ONCE at
+#      startup, before the first request. No mkdir/open ever happens between
+#      a request starting and its timers being read.
+#   2. Nothing is written to disk while a transfer is in flight. The only
+#      work done during a transfer is appending bytes to an in-memory
+#      bytearray in _write_cb (see the HOT PATH note there), which is what
+#      --expect-body/--expect-regex already did.
+#   3. Run files are written after run_once() has returned - i.e. after
+#      libcurl has stopped the clock and every phase timer has been read off
+#      the handle. Those values are frozen numbers in a dict by then; no
+#      amount of subsequent I/O can change them.
+#   4. Body buffering is capped (--capture-body-limit, default 256 KiB).
+#      Past the cap the callback does one integer comparison and returns, so
+#      capturing a 2 GB download does not turn into a 2 GB memcpy that would
+#      show up as inflated BODY_DL.
+#
+# The residual effect is that writing a file delays the NEXT request by the
+# cost of that write. That shifts when run N+1 starts; it does not touch what
+# run N+1 measures, since each run's phases are timed by libcurl internally
+# from its own start. Deliberately preferred over buffering every run in
+# memory and flushing at the end, which would make -c 10000 a memory problem.
+
+CAPTURE_MODES = ("never", "all", "failed", "assert", "error")
+
+CAPTURE_BODY_LIMIT_DEFAULT = 256 * 1024  # 256 KiB
+
+# Argument values that get redacted in command-statement.out. This file is
+# written into the working directory and is meant to be attached to tickets
+# and handed to other people - the same way this tool's table output already
+# is - so a bearer token baked into the reproduction command is a real leak,
+# not a hypothetical one. --capture-secrets turns redaction off for the case
+# where the capture is staying local and the exact command matters more.
+SENSITIVE_HEADER_NAMES = {
+    "authorization",
+    "proxy-authorization",
+    "cookie",
+    "set-cookie",
+    "x-api-key",
+    "api-key",
+    "apikey",
+    "x-auth-token",
+    "auth-token",
+    "x-access-token",
+    "access-token",
+    "x-session-token",
+    "x-csrf-token",
+    "x-amz-security-token",
+    "private-token",
+}
+
+REDACTED = "<redacted>"
+
+
+def parse_size(s):
+    """Parse a byte size: '512', '256K', '1M', '2MB', '1G'. Raises ValueError
+    on anything else. Used by --capture-body-limit."""
+    txt = str(s).strip().upper().replace("IB", "B")
+    mult = 1
+    for suffix, factor in (("KB", 1024), ("MB", 1024**2), ("GB", 1024**3)):
+        if txt.endswith(suffix):
+            txt, mult = txt[: -len(suffix)], factor
+            break
+    else:
+        for suffix, factor in (("K", 1024), ("M", 1024**2), ("G", 1024**3)):
+            if txt.endswith(suffix):
+                txt, mult = txt[: -len(suffix)], factor
+                break
+        else:
+            if txt.endswith("B"):
+                txt = txt[:-1]
+    value = float(txt)
+    if value < 0:
+        raise ValueError("size cannot be negative")
+    return int(value * mult)
+
+
+def _redact_header_arg(value):
+    """Redact the value half of a 'Name: secret' header argument, keeping the
+    header name visible so the command still reads correctly."""
+    name, sep, _ = value.partition(":")
+    if sep and name.strip().lower() in SENSITIVE_HEADER_NAMES:
+        return f"{name}: {REDACTED}"
+    return value
+
+
+def build_command_statement(argv, redact=True):
+    """Rebuild the invocation as a copy-pasteable, shell-quoted command.
+
+    Reconstructed from sys.argv rather than echoed raw, so the result is
+    correctly quoted even when the original shell did the quoting - and so
+    secrets can be filtered on the way through."""
+    if not argv:
+        return ""
+    parts = [argv[0]]
+    i = 1
+    while i < len(argv):
+        arg = argv[i]
+        nxt = argv[i + 1] if i + 1 < len(argv) else None
+
+        if not redact:
+            parts.append(arg)
+            i += 1
+            continue
+
+        # Split forms: -H "Authorization: Bearer x" / --header "..."
+        if arg in ("-H", "--header") and nxt is not None:
+            parts.extend([arg, _redact_header_arg(nxt)])
+            i += 2
+            continue
+        # Joined forms: -H"Authorization: ..." and --header=...
+        if arg.startswith("--header="):
+            parts.append("--header=" + _redact_header_arg(arg[len("--header=") :]))
+            i += 1
+            continue
+        if arg.startswith("-H") and len(arg) > 2:
+            parts.append("-H" + _redact_header_arg(arg[2:]))
+            i += 1
+            continue
+
+        # Literal cookie data (a filename has no '=' and stays visible, since
+        # the path is useful and the secret lives in the file, not the arg).
+        if arg in ("-b", "--cookie") and nxt is not None:
+            parts.extend([arg, REDACTED if "=" in nxt else nxt])
+            i += 2
+            continue
+        if arg.startswith("--cookie=") and "=" in arg[len("--cookie=") :]:
+            parts.append("--cookie=" + REDACTED)
+            i += 1
+            continue
+
+        parts.append(arg)
+        i += 1
+
+    return " ".join(shlex.quote(p) for p in parts)
+
+
+class CaptureWriter:
+    """Owns the capture directory and decides which runs get recorded.
+
+    Directory layout, one directory per invocation:
+
+        {YYYYMMDDHHMMSS}-{pid}/command-statement.out
+        {YYYYMMDDHHMMSS}-{pid}/{run}.out
+
+    The timestamp is when the command was kicked off, not when each file was
+    written, so every file from one invocation lands together. Run files are
+    named for the run number exactly as it appears in the table's # column,
+    so a failing row maps to its file with no arithmetic.
+    """
+
+    def __init__(
+        self,
+        mode,
+        base_dir,
+        url,
+        argv,
+        started,
+        body_limit=CAPTURE_BODY_LIMIT_DEFAULT,
+        want_body=True,
+        redact=True,
+        count=1,
+    ):
+        self.mode = mode or "never"
+        self.base_dir = base_dir
+        self.url = url
+        self.argv = argv
+        self.started = started
+        self.body_limit = body_limit
+        self.want_body = want_body
+        self.redact = redact
+        self.count = count
+        self.dir = None
+        self.written = []
+
+    @property
+    def active(self):
+        return self.mode != "never"
+
+    def open(self):
+        """Create the capture directory and write command-statement.out.
+
+        Called once before the first probe: it fails fast on an unwritable
+        path (rather than after a 20-minute run), and gets every mkdir/open
+        out of the way before any timing starts."""
+        if not self.active:
+            return
+        stamp = self.started.strftime("%Y%m%d%H%M%S")
+        self.dir = os.path.join(self.base_dir, f"{stamp}-{os.getpid()}")
+        os.makedirs(self.dir, exist_ok=True)
+        self._write_command_statement()
+
+    def _write_command_statement(self):
+        try:
+            libcurl_ver = pycurl.version
+        except Exception:
+            libcurl_ver = "unknown"
+        py_ver = "%d.%d.%d" % sys.version_info[:3]
+
+        lines = [
+            "# check-endpoint capture session",
+            "",
+            f"started-local:   {self.started.strftime('%Y-%m-%d %H:%M:%S %Z').strip()}",
+            f"started-utc:     {self.started.astimezone(UTC).strftime('%Y-%m-%dT%H:%M:%SZ')}",
+            f"pid:             {os.getpid()}",
+            f"host:            {socket.gethostname()}",
+            f"cwd:             {os.getcwd()}",
+            f"capture-dir:     {os.path.abspath(self.dir)}",
+            f"capture-on:      {self.mode}",
+            f"capture-body:    {'yes' if self.want_body else 'no'}"
+            + (f" (limit {human_bytes(self.body_limit)})" if self.want_body else ""),
+            f"url:             {self.url}",
+            f"runs-requested:  {self.count}",
+            f"version:         check-endpoint/{APP_VERSION}",
+            f"python:          {py_ver}",
+            f"libcurl:         {libcurl_ver}",
+            "",
+            "# command statement",
+            "",
+            build_command_statement(self.argv, redact=self.redact),
+            "",
+        ]
+        if self.redact:
+            lines += [
+                "# note: values of sensitive arguments (Authorization and similar",
+                f"#       headers, literal -b cookie data) are shown as '{REDACTED}'.",
+                "#       Re-run with --capture-secrets to record them verbatim.",
+                "",
+            ]
+        with open(
+            os.path.join(self.dir, "command-statement.out"), "w", encoding="utf-8"
+        ) as fh:
+            fh.write("\n".join(lines))
+
+    def should_capture(self, res):
+        """Whether this run's result matches the --capture-on mode.
+
+        Note 'assert' and 'failed' can only be evaluated after the request is
+        done, which is why the body/headers are buffered on every run
+        regardless of mode - you cannot retroactively capture a response you
+        chose not to keep. Only the writing is conditional."""
+        if not self.active:
+            return False
+        if self.mode == "all":
+            return True
+        failed = bool(res.get("failed"))
+        asserted = bool(res.get("_assert_fails"))
+        if self.mode == "error":
+            return failed
+        if self.mode == "assert":
+            return asserted
+        if self.mode == "failed":
+            return failed or asserted
+        return False
+
+    def write_run(self, res):
+        """Write one {run}.out. Called only after run_once() has returned, so
+        every timing in res is already a frozen number - see the LATENCY
+        SAFETY note at the top of this section."""
+        if self.dir is None:
+            return
+        path = os.path.join(self.dir, f"{res['run']}.out")
+        try:
+            with open(path, "wb") as fh:
+                fh.write(self._render_meta(res).encode("utf-8"))
+                self._write_body(fh, res)
+        except OSError as exc:
+            sys.stderr.write(f"warning: could not write capture {path}: {exc}\n")
+            return
+        self.written.append(res["run"])
+
+    def _render_meta(self, res):
+        phases = res.get("phases") or {}
+
+        if res.get("failed"):
+            outcome = f"REQUEST-FAILED {res.get('marker') or '<ERR>'}"
+        elif res.get("_assert_fails"):
+            outcome = "ASSERTION-FAILED"
+        else:
+            outcome = "OK"
+
+        out = [
+            "# check-endpoint capture",
+            "",
+            f"run:             {res['run']}",
+            f"outcome:         {outcome}",
+            f"captured-at:     {datetime.now(UTC).strftime('%Y-%m-%dT%H:%M:%S.%fZ')}",
+            f"url:             {self.url}",
+            f"ip:              {res.get('ip') or '-'}",
+            f"http-code:       {res.get('code') if res.get('code') is not None else '-'}",
+            f"proto:           {res.get('proto') or '-'}",
+            f"bytes:           {res['bytes'] if res.get('bytes') is not None else '-'}",
+            f"tls-verified:    {'no (-k/--insecure)' if res.get('insecure') else 'yes'}",
+        ]
+        if res.get("errno") is not None:
+            out.append(f"curl-errno:      {res['errno']}")
+
+        out += ["", "[timings]"]
+        for key, label in (
+            ("dns", "dns"),
+            ("tcp", "tcp-connect"),
+            ("tls", "tls-handshake"),
+            ("pretransfer", "pre-transfer"),
+            ("ttfb", "1st-byte"),
+            ("download", "body-dl"),
+            ("total", "total"),
+        ):
+            val = phases.get(key)
+            if val is None:
+                out.append(f"{label + ':':17}-")
+            else:
+                # Human units for reading, raw seconds for machine parsing -
+                # the raw value is the one to feed a spreadsheet or a script.
+                out.append(f"{label + ':':17}{human_time(val):<10}({val:.6f}s)")
+
+        if res.get("redirect_count"):
+            out.append(
+                f"{'redirects:':17}{res['redirect_count']} "
+                f"({res.get('redirect_time') or 0.0:.6f}s total)"
+            )
+        else:
+            out.append(f"{'redirects:':17}none")
+
+        if res.get("chunks") is not None:
+            out += ["", "[stream]", f"{'chunks:':17}{res['chunks']}"]
+            for key, label in (("avggap", "avg-gap"), ("maxgap", "max-gap")):
+                val = res.get(key)
+                out.append(
+                    f"{label + ':':17}-"
+                    if val is None
+                    else f"{label + ':':17}{human_time(val):<10}({val:.6f}s)"
+                )
+
+        fails = res.get("_assert_fails")
+        if fails:
+            out += ["", "[assertions]"]
+            out += [f"FAIL: {reason}" for reason in fails]
+        elif fails is not None:
+            out += ["", "[assertions]", "PASS"]
+
+        cookies = res.get("cookies")
+        if cookies:
+            out += ["", "[cookies]"]
+            for c in cookies:
+                flags = ",".join(
+                    f
+                    for f, on in (
+                        ("secure", c["secure"]),
+                        ("httponly", c["http_only"]),
+                        ("subdomains", c["include_subdomains"]),
+                    )
+                    if on
+                )
+                out.append(
+                    f"{c['name']}={c['value']}  "
+                    f"[{c['domain']}{c['path']}{(' ' + flags) if flags else ''}]"
+                )
+
+        headers = res.get("headers")
+        out += ["", "[response-headers]"]
+        if not headers:
+            out.append("(none captured)")
+        else:
+            if headers.get("_status_line"):
+                out.append(headers["_status_line"])
+            for k, v in headers.items():
+                if k != "_status_line":
+                    out.append(f"{k}: {v}")
+
+        body = res.get("body")
+        out.append("")
+        if body is None:
+            out.append("[response-body] (not captured)")
+        elif not body:
+            # Distinguishes "nothing came back" from "0 bytes shown", which
+            # reads as a truncation artifact in a file you opened precisely
+            # because the run failed.
+            out.append("[response-body] (none received)")
+        else:
+            shown = min(len(body), self.body_limit)
+            total = res.get("bytes")
+            note = f"{shown} bytes shown"
+            if total is not None and total > shown:
+                note += f", {total} received - TRUNCATED"
+            out.append(f"[response-body] ({note})")
+        out.append("")
+        return "\n".join(out)
+
+    def _write_body(self, fh, res):
+        """Body goes to disk as raw bytes, not decoded text, so a capture is
+        byte-identical to what came off the wire - binary payloads, odd
+        encodings and mojibake all survive for later inspection."""
+        body = res.get("body")
+        if not body:
+            return
+        fh.write(body[: self.body_limit])
+        if not body.endswith(b"\n"):
+            fh.write(b"\n")
+
+    def close(self):
+        """Append the captured-run index to command-statement.out and tell the
+        user on stderr where everything landed (stderr so it stays out of a
+        piped table)."""
+        if not self.active or self.dir is None:
+            return
+        try:
+            with open(
+                os.path.join(self.dir, "command-statement.out"), "a", encoding="utf-8"
+            ) as fh:
+                fh.write("\n# captured runs\n\n")
+                fh.write(
+                    ", ".join(str(r) for r in self.written)
+                    if self.written
+                    else f"(none - no run matched --capture-on {self.mode})"
+                )
+                fh.write("\n")
+        except OSError:
+            pass
+        n = len(self.written)
+        sys.stderr.write(
+            f"# capture: {n} run{'' if n == 1 else 's'} recorded in {self.dir}/\n"
+        )
+        sys.stderr.flush()
+
+
 # ── main ──────────────────────────────────────────────────────────────────────
 
 
@@ -2512,6 +2957,49 @@ ANALYSIS, CHECKS, AND EXPORT
     headers are collapsed by default; every other header is shown verbatim
     either way.
 
+  OUTPUT CAPTURE (--capture-on)
+    Record full responses to disk so a failure can be read afterwards
+    instead of reproduced. Not to be confused with --capture-header, which
+    only tracks a header name in the end-of-run summary.
+
+      --capture-on WHEN   never   (default) capture nothing
+                          all     record every run
+                          failed  record any request failure OR assertion
+                                  breach - the usual choice
+                          assert  record assertion breaches only
+                          error   record transport/network failures only
+                          Bare --capture-on means 'failed'.
+
+    Each invocation writes one directory, named for when the command was
+    kicked off plus the pid, so concurrent probes never collide:
+
+      {{YYYYMMDDHHMMSS}}-{{pid}}/command-statement.out   the command used
+      {{YYYYMMDDHHMMSS}}-{{pid}}/{{run}}.out              one per recorded run
+
+    Run files are named for the run number as shown in the table's # column,
+    so a failing row maps straight to its file. Each contains the outcome,
+    every phase timing (human units and raw seconds), status, IP, protocol,
+    assertion results, response headers, and the response body as raw bytes.
+
+    Other flags:
+      --capture-dir DIR        where to put the capture directory (default: .)
+      --capture-body-limit SZ  max body bytes per run (default: 256.0KB;
+                               accepts 512, 256K, 1M, 2MB)
+      --capture-no-body        record timings/status/headers but no body
+      --capture-secrets        write the command verbatim; by default
+                               Authorization-style header values and literal
+                               -b cookie data are recorded as <redacted>,
+                               since capture files get shared
+
+    Capture does not affect the timing numbers. The directory is created
+    before the first request; nothing is written to disk during a transfer;
+    run files are written between requests, after libcurl has stopped the
+    clock and every phase timer has been read; and body buffering is capped
+    so a large download can't turn into a large memcpy inside the transfer.
+    Because a run's fate isn't known until it finishes, responses are
+    buffered for every run once capture is on - only the write is
+    conditional. Cannot be combined with --prometheus.
+
   --prometheus  (with --prometheus-port, --prometheus-bind)
     Run as a Prometheus exporter daemon instead of printing the table:
     serve metrics over HTTP (default port 9109, all interfaces) and re-probe
@@ -2591,6 +3079,15 @@ EXAMPLES
   Run a Prometheus exporter that re-probes on every scrape:
       ./check-endpoint.py --prometheus --prometheus-port 9109 https://example.com
       # then: curl localhost:9109   (Prometheus scrapes the same endpoint)
+
+  Capture the response of any run that fails an assertion:
+      ./check-endpoint.py -c 20 --assert-status 200 --capture-on failed https://example.com
+
+  Capture every run into a chosen directory:
+      ./check-endpoint.py -c 5 --capture-on all --capture-dir /tmp/probes https://example.com
+
+  Capture only transport failures, headers and timings but no body:
+      ./check-endpoint.py -c 50 --capture-on error --capture-no-body https://example.com
 
   Send a literal cookie (curl -b style):
       ./check-endpoint.py -b "session=abc123; theme=dark" https://example.com
@@ -2885,6 +3382,59 @@ NOTE ON -p/-P (IP pinning)
         help="bind address for the --prometheus exporter (default: all interfaces)",
     )
 
+    # ── output capture (write responses to disk) ───────────────────────
+    capture_group = parser.add_argument_group(
+        "output capture",
+        "Record full responses to disk so a failure can be read after the fact "
+        "instead of reproduced. Unrelated to --capture-header, which only "
+        "tracks a header name in the end-of-run summary.",
+    )
+    capture_group.add_argument(
+        "--capture-on",
+        dest="capture_on",
+        nargs="?",
+        const="failed",
+        default="never",
+        choices=CAPTURE_MODES,
+        metavar="WHEN",
+        help="record runs to disk. WHEN is one of: never (default), all "
+        "(every run), failed (any request failure OR assertion breach), "
+        "assert (assertion breaches only), error (transport/network "
+        "failures only). Bare --capture-on means 'failed'",
+    )
+    capture_group.add_argument(
+        "--capture-dir",
+        dest="capture_dir",
+        default=".",
+        metavar="DIR",
+        help="parent directory for the capture directory (default: current "
+        "directory). Each invocation creates DIR/{YYYYMMDDHHMMSS}-{pid}/",
+    )
+    capture_group.add_argument(
+        "--capture-body-limit",
+        dest="capture_body_limit",
+        default=None,
+        metavar="SIZE",
+        help="max response body bytes to record per run: 512, 256K, 1M, 2MB "
+        f"(default: {human_bytes(CAPTURE_BODY_LIMIT_DEFAULT)}). Bodies past "
+        "the cap are truncated, keeping capture off the latency hot path",
+    )
+    capture_group.add_argument(
+        "--capture-no-body",
+        dest="capture_no_body",
+        action="store_true",
+        help="record timings, status and headers but not the response body - "
+        "for large downloads, or when the body is sensitive",
+    )
+    capture_group.add_argument(
+        "--capture-secrets",
+        dest="capture_secrets",
+        action="store_true",
+        help="write the command statement verbatim. By default the values of "
+        "Authorization-style headers and literal -b cookie data are replaced "
+        "with '<redacted>', since capture files get shared",
+    )
+
     # ── assertions / thresholds (exit non-zero on any breach) ──────────
     assert_group = parser.add_argument_group(
         "assertions",
@@ -3097,6 +3647,48 @@ NOTE ON -p/-P (IP pinning)
         else None
     )
 
+    # ── output capture setup ──────────────────────────────────────────
+    # Everything here happens before the first request: bad arguments and
+    # unwritable directories fail immediately rather than 500 runs in, and
+    # the mkdir is done and dusted before any clock starts.
+    capture_body_limit = CAPTURE_BODY_LIMIT_DEFAULT
+    if args.capture_body_limit is not None:
+        try:
+            capture_body_limit = parse_size(args.capture_body_limit)
+        except ValueError:
+            sys.stderr.write(
+                f"error: invalid --capture-body-limit: {args.capture_body_limit!r} "
+                "(expected e.g. 512, 256K, 1M, 2MB)\n"
+            )
+            sys.exit(2)
+
+    if args.capture_on != "never" and args.prometheus:
+        # The exporter re-probes on every scrape and never exits, so capture
+        # would grow without bound for as long as Prometheus keeps polling.
+        sys.stderr.write(
+            "error: --capture-on cannot be used with --prometheus.\n"
+            "  The exporter re-probes on every scrape and runs indefinitely, so\n"
+            "  capturing would fill the disk. Run a normal probe to capture.\n"
+        )
+        sys.exit(2)
+
+    capture = CaptureWriter(
+        mode=args.capture_on,
+        base_dir=args.capture_dir,
+        url=args.url,
+        argv=sys.argv,
+        started=datetime.now().astimezone(),
+        body_limit=capture_body_limit,
+        want_body=not args.capture_no_body,
+        redact=not args.capture_secrets,
+        count=args.count,
+    )
+    try:
+        capture.open()
+    except OSError as exc:
+        sys.stderr.write(f"error: cannot create capture directory: {exc}\n")
+        sys.exit(2)
+
     capture_body = args.expect_body is not None or expect_regex is not None
     # Headers must be captured for --show-headers, --server-hints, or any
     # --capture-header NAME. Any one of them turns on the per-response capture.
@@ -3104,6 +3696,24 @@ NOTE ON -p/-P (IP pinning)
         args.show_headers or args.server_hints or bool(args.capture_header_names)
     )
     capture_cert = args.tls_info
+
+    # Whether a run will be worth capturing isn't known until it has finished,
+    # so once capture is on the response has to be buffered for EVERY run
+    # regardless of mode - there is no going back for a body that was thrown
+    # away. Only the disk write is conditional.
+    body_limit = BODY_CAPTURE_LIMIT
+    if capture.active:
+        capture_headers = True
+        if capture.want_body:
+            capture_body = True
+            # Assertions scan up to BODY_CAPTURE_LIMIT; capture keeps its own,
+            # usually smaller, cap. Buffer whichever needs more and let the
+            # writer trim to the capture limit on the way to disk.
+            body_limit = (
+                max(BODY_CAPTURE_LIMIT, capture_body_limit)
+                if assert_cfg is not None and (args.expect_body or expect_regex)
+                else capture_body_limit
+            )
 
     def run_probe_cycle(quiet, want_cert):
         """Run args.count probes and return (results, first captured cert)."""
@@ -3134,9 +3744,15 @@ NOTE ON -p/-P (IP pinning)
                 cookie_jar=args.cookie_jar,
                 cookie_share=cookie_share,
                 capture_cookies=cookies_active,
+                body_limit=body_limit,
             )
             if assert_cfg is not None:
                 res["_assert_fails"] = evaluate_assertions(res, assert_cfg)
+            # Written here, between requests - never during one. run_once has
+            # returned, so every timer has already been read off the handle
+            # and res holds frozen numbers that no later I/O can affect.
+            if capture.should_capture(res):
+                capture.write_run(res)
             collected.append(res)
         first_cert = next((r["cert"] for r in collected if r.get("cert")), None)
         return collected, first_cert
@@ -3204,6 +3820,10 @@ NOTE ON -p/-P (IP pinning)
                 colored = "; ".join(_colorize_reason(x) for x in r["_assert_fails"])
                 sys.stdout.write(f"{prefix} {colored}\n")
         sys.stdout.flush()
+
+    # Before the exit below, so the capture index is finalised and the path is
+    # reported even on a failing run - which is exactly the run you captured.
+    capture.close()
 
     # Strict exit code: any single breaching run fails the whole invocation.
     if assert_cfg is not None and any(r["_assert_fails"] for r in results):
