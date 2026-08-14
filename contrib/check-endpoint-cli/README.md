@@ -31,6 +31,55 @@ docker build --build-arg EXTRA_PACKAGES="dnsutils curl iputils-ping" \
     -f contrib/check-endpoint-cli/Dockerfile -t check-endpoint .
 ```
 
+`EXTRA_PACKAGES` is a space-separated list of Debian package names, passed
+straight to `apt-get install` in the runtime stage. Names have to be exactly
+what the archive calls them: `netcat` is a virtual package and fails, use
+`netcat-openbsd`; there is no `iputils` or `ping` package, the binaries ship
+separately as `iputils-ping`, `iputils-tracepath` and `iputils-arping`. To
+check a name before spending a build on it:
+
+```bash
+docker run --rm python:3.12-slim \
+    bash -c "apt-get update -qq && apt-cache policy netcat-openbsd"
+```
+
+### Laptop debug image
+
+The tagged builds above stay lean because they get pulled onto every node that
+runs them. A laptop image has no such constraint, so it is worth building one
+fat image once and keeping it around for the sessions where you are chasing a
+problem rather than taking a measurement:
+
+```bash
+docker build \
+    -f contrib/check-endpoint-cli/Dockerfile \
+    --build-arg EXTRA_PACKAGES="bash coreutils findutils grep sed gawk less \
+                                tar gzip zip unzip file which hostname curl \
+                                wget ca-certificates openssl iproute2 dnsutils \
+                                traceroute procps psmisc util-linux jq yq \
+                                awscli vim-tiny netcat-openbsd \
+                                iputils-ping iputils-tracepath \
+                                iputils-arping" \
+    -t check-endpoint:debug .
+```
+
+`dnsutils` and `iproute2` for the resolver and routing questions that the `DNS`
+and `TCP` columns raise, `openssl` for the certificate that `--tls-info`
+reports, `traceroute` and `netcat-openbsd` for the hop that is dropping the
+connection, `jq` and `yq` for reading the API responses and manifests you are
+probing against.
+
+Two things are deliberately not in that list. `kubectl` is not in the Debian
+archive — it comes from `pkgs.k8s.io`, so adding it means a second `RUN` with
+that apt repository rather than a `--build-arg`. And this image is for a
+laptop: keep the cluster-side one lean, because a debug pod carrying `awscli`
+and a shell is a credential path for anyone who can `exec` into it, and IRSA
+will happily hand it a role.
+
+Tag it for what is inside rather than reusing `:debug` on every rebuild —
+`check-endpoint:debug-2026-08` beats wondering which packages the local
+`:debug` actually has.
+
 ## Run locally
 
 ```bash
@@ -38,11 +87,36 @@ docker build --build-arg EXTRA_PACKAGES="dnsutils curl iputils-ping" \
 docker run --rm -it check-endpoint -c 10 --stats https://example.com
 
 # Pipe it somewhere - drop -t and the output is clean text
-docker run --rm check-endpoint --json https://example.com > result.json
+docker run --rm check-endpoint -c 10 --stats https://example.com > result.txt
 
 # Get a shell instead of the probe
 docker run --rm -it --entrypoint bash check-endpoint
 ```
+
+### A container that stays up
+
+`ENTRYPOINT` is the probe, so the container exits as soon as the run finishes.
+For a session where you want the container to outlive any one shell — several
+terminals against it, or a scratch file in `/tmp` that survives you closing the
+window — override the entrypoint with something that does nothing and exec into
+it:
+
+```bash
+docker run -d --name probe --entrypoint sleep check-endpoint:debug infinity
+docker exec -it probe bash
+```
+
+Inside, the CLI is on `PATH` under its own name, uid is 10001 and the working
+directory is `/tmp`:
+
+```bash
+check-endpoint -c 10 --stats https://example.com
+check-endpoint --tls-info https://example.com
+```
+
+`docker rm -f probe` when you are done. Note that `infinity` sits after the
+image name because it is an argument to `sleep`, not to `docker run` — the same
+split as `--command --` in `kubectl run`.
 
 ## Run in Kubernetes
 
