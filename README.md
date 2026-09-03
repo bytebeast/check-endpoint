@@ -62,6 +62,11 @@ it in ways that aren't as convenient with the curl command-line interface.
   other columns
 - **Failure markers** - `<DNS-FAIL>`, `<CONN-FAIL>`, `<TLS-FAIL>`, `<TO>`, and
   more - printed at exactly the phase that failed
+- **Self-explaining TLS failures** - a `<TLS-FAIL>` run automatically prints
+  libcurl's verify result ("certificate has expired", "self-signed
+  certificate", "no alternative certificate subject name matches...") followed
+  by the offending certificate. No flag, and no re-run: the certificate is read
+  off the connection that actually failed
 - **Clear empty-cell conventions** - a dim `n/a` marks a phase that structurally
   doesn't apply (e.g. `TLS_HANDSHAKE` on plain `http://`, or `REDIRECT` when
   none occurred); a dim `-` marks a field that's empty for any other reason
@@ -73,6 +78,13 @@ it in ways that aren't as convenient with the curl command-line interface.
   including the first chunk's arrival (that span is already covered by the
   DNS/TCP/TLS/PRE-TRANSFER/1ST_BYTE columns) - so you can see whether an SSE or
   chunked response streams smoothly or stalls mid-transfer
+- **Streaming gap percentiles (ITL)** - `-S --stats` adds a `STREAM GAPS`
+  footer with min/p50/p90/p95/p99/max/mean/stdev over every inter-chunk gap.
+  It samples _gaps_, not requests, so a single 400-chunk response is already
+  399 samples and the percentiles mean something at `-c 1`. It also counts SSE
+  frames, so when a proxy batches several events into one write you get a
+  second `EVENT_GAP` row showing per-token latency alongside the cadence the
+  client actually sees
 - **Catppuccin Mocha color theme** - timing magnitude encoded in color (cool
   blues for fast, warm peach/red for slow); auto-disabled when output is piped
 - **curl-compatible flags** - `-H`, `-d`, `-X`, `-4`/`-6`, `-F`, `-a`,
@@ -91,7 +103,8 @@ it in ways that aren't as convenient with the curl command-line interface.
   types; works against authenticated and stateful endpoints
 - **Percentile summary** - `--stats` reports min / p50 / p90 / p95 / p99 / max /
   mean / stdev per phase across `-c N` runs, so you see tail latency and jitter,
-  not just a single sample
+  not just a single sample; with `-S` it also reports the same spread over
+  streaming chunk gaps
 - **Built-in assertions (CI / cron ready)** - `--assert-status`, `--max-total`,
   `--max-ttfb`, `--max-dns`/`--max-tcp`/`--max-tls`/`--max-download` make the
   probe exit non-zero if any request breaches, so it drops straight into
@@ -100,7 +113,8 @@ it in ways that aren't as convenient with the curl command-line interface.
   run when the body is wrong, not just when the status code is
 - **TLS certificate inspection** - `--tls-info` prints the certificate issuer,
   expiry with days remaining (colored yellow as it nears expiry, red once
-  expired), and Subject Alternative Names
+  expired), and Subject Alternative Names. Not needed to diagnose a failure -
+  the same block prints on its own when a handshake fails
 - **Response header capture** - `--show-headers` prints selected response
   headers and a detected cache `HIT`/`MISS` verdict, handy for debugging CDNs
   and proxies
@@ -167,7 +181,7 @@ are driven by flags rather than by a single field.
 | `HTTP_CODE`                      | Status codes & flakiness       |
 | `TOTAL_BYTES`                    | Response size & content drift  |
 | `PROTO`                          | HTTP version                   |
-| `CHUNKS` / `AVG_GAP` / `MAX_GAP` | Streaming responses (`-S`)     |
+| `CHUNKS` / `AVG_GAP` / `MAX_GAP` | Streaming responses (`-S`), and gap percentiles / ITL with `--stats` |
 
 ---
 
@@ -245,7 +259,12 @@ are driven by flags rather than by a single field.
   means the request was redirected to HTTPS - check the `REDIRECT` column
 - **Certificate expiry** - pair with `--tls-info` for issuer, SANs, and days
   remaining before the certificate lapses
-- **`<TLS-FAIL>`** - expired cert, hostname mismatch, or untrusted CA
+- **`<TLS-FAIL>`** - expired cert, hostname mismatch, or untrusted CA. All
+  three produce the same marker, so the `TLS FAILURE` block printed under the
+  table is what tells them apart: libcurl's verify result, then the
+  certificate itself with an expired date called out in red. Check the `san:`
+  line against the hostname you asked for - a certificate can be entirely
+  valid and still not cover the name you requested
 - **Private CA or self-signed cert** - use `--cacert FILE` to verify against
   your own bundle rather than reaching for `-k`; verification stays on, so a
   real fault is still caught. `-k` is for when the certificate is knowingly
@@ -389,11 +408,23 @@ misreport ordinary connection setup as if it were an in-stream stall. With fewer
 than 2 chunks there's no inter-chunk gap to measure, so both columns correctly
 show `n/a` rather than a misleading number.
 
-This makes `AVG_GAP` functionally the same metric LLM serving benchmarks call
+This makes `AVG_GAP` close to the metric LLM serving benchmarks call
 **Inter-Token Latency (ITL)**, the average time between successive tokens.
 Measuring it over the wire, rather than trusting server-side logs, captures what
 the client actually experiences: network jitter, reverse-proxy buffering, and
 load-balancer hops are all included, not just model-side generation time.
+
+One caveat on reading it as literal ITL: a chunk is one libcurl write-callback
+invocation - one TCP read - not one token. A buffering proxy, or simply a fast
+stream, coalesces several SSE events into a single chunk, which lowers `CHUNKS`
+and widens each gap. Add `--stats` and the tool counts SSE frames as it goes, so
+it can report both readings separately - see
+[Streaming gap percentiles](#streaming-gap-percentiles--s---stats) below.
+
+Note also that `AVG_GAP` is one number per request, which is a weak summary of
+something as spiky as a token stream: a response that ticks along at 5ms and
+stalls once for 1.2s reports `AVG_GAP 13ms`, a value it never actually
+exhibited. `--stats` is what turns that into a distribution.
 
 - **Token stutter / uneven generation** - a large gap between `AVG_GAP` and
   `MAX_GAP` means the stream paused somewhere in the middle, even though
@@ -409,10 +440,12 @@ load-balancer hops are all included, not just model-side generation time.
   pressure) while others stream smoothly.
 - **ITL benchmarking without server-side instrumentation** - if you don't have
   access to your model server's internal metrics (or you're testing someone
-  else's API), `-c 20 -S` gives you a client-side ITL measurement for free:
-  `AVG_GAP` is your typical inter-token latency, `MAX_GAP` is your worst-case,
-  and running multiple requests shows whether ITL is consistent or degrades
-  under concurrent load.
+  else's API), `-S --stats` gives you a client-side ITL measurement for free:
+  the `CHUNK_GAP` p50 is your typical inter-token latency, p99 and max are your
+  tail, and the spread between them tells you whether the stream is uniformly
+  slow or mostly fast with occasional stalls - a distinction `AVG_GAP` alone
+  cannot make. Because it samples gaps rather than requests, one request is
+  already enough to get a reading.
 - **Works with auth and POST bodies** - `-S` composes with `-H`/`-d`/`-X`, so
   you can test real chat-completion or SSE endpoints directly:
   `-X POST -d '{"stream": true, ...}' -H "Authorization: Bearer ..." -S`
@@ -735,8 +768,8 @@ the unit an absolute path to the venv's Python rather than relying on `PATH`.
 
 ## Running in a container
 
-If you'd rather not build pycurl at all — or you need to probe from inside a
-cluster rather than from your laptop — there's a prebuilt CLI image:
+If you'd rather not build pycurl at all, or you need to probe from inside a
+cluster rather than from your laptop, there's a prebuilt CLI image:
 
 ```bash
 # From anywhere
@@ -752,7 +785,7 @@ The image is the same script with pycurl already compiled against Debian's
 libcurl, so every platform caveat above is handled for you.
 
 Probing from inside a cluster measures a genuinely different path, which is the
-point — but two Kubernetes defaults will distort the numbers if you don't know
+point, but two Kubernetes defaults will distort the numbers if you don't know
 about them:
 
 - **`ndots:5` inflates the `DNS` column.** Kubernetes appends cluster search
@@ -769,7 +802,7 @@ service-mesh sidecars are in
 **[contrib/check-endpoint-cli](contrib/check-endpoint-cli/README.md)**.
 
 For scraping metrics continuously rather than running ad-hoc probes, use the
-exporter image instead — see
+exporter image instead; see
 [contrib/check-endpoint-exporter](contrib/check-endpoint-exporter/README.md).
 
 ---
@@ -820,6 +853,9 @@ exporter image instead — see
 # Test an SSE / chunked-streaming endpoint and see per-chunk cadence
 ./check-endpoint.py -c 10 -S -H "Accept: text/event-stream" https://example.com/stream
 
+# Streaming cadence as a distribution: p50/p95/p99 over every inter-chunk gap
+./check-endpoint.py -S --stats https://example.com/v1/events
+
 # Stream mode against a real chat-completion endpoint (auth + POST body)
 ./check-endpoint.py -X POST -d '{"stream": true, "prompt": "hi"}' \
     -H "Content-Type: application/json" -H "Authorization: Bearer xyz123" \
@@ -830,6 +866,9 @@ exporter image instead — see
 
 # Skip certificate verification (curl -k); prints a warning to stderr
 ./check-endpoint.py -k https://staging.example.com
+
+# Diagnose a TLS failure - the cause and the certificate print on their own
+./check-endpoint.py https://expired.example.com
 
 # Inspect the certificate chain of an endpoint you can't validate
 ./check-endpoint.py -k --tls-info https://staging.example.com
@@ -926,20 +965,20 @@ kubectl run check-endpoint --rm -it --restart=Never \
 | `-p IP` / `--pin-ip IP`                         | Pin all repeats to a specific IP address                                                                                                                                                              |
 | `-k` / `--insecure`                             | Skip TLS certificate verification (curl's `-k`). Timings stay accurate, but the whole `<TLS-FAIL>` family stops being reported - see the warning under [Failure Markers](#failure-markers)             |
 | `--cacert FILE`                                 | Verify against `FILE` instead of the system trust store. Keeps verification **on**, so use this rather than `-k` for endpoints behind a private CA. Mutually exclusive with `-k`                       |
-| `-S` / `--stream`                               | Time the gaps between chunks as they arrive and report `CHUNKS`/`AVG_GAP`/`MAX_GAP` - for testing SSE or chunked-transfer streaming responses                                                         |
+| `-S` / `--stream`                               | Time the gaps between chunks as they arrive and report `CHUNKS`/`AVG_GAP`/`MAX_GAP` - for testing SSE or chunked-transfer streaming responses. Combine with `--stats` for gap percentiles (ITL)        |
 | `-b DATA\|FILE` / `--cookie`                    | curl-style: literal cookie data (`"name=value"`) if it contains `=`, otherwise a filename to read cookies from. Also turns the cookie engine on, so `Set-Cookie` responses persist across `-c N` runs |
 | `-j FILE` / `--cookie-jar`                      | Write all cookies accumulated across every `-c N` run to `FILE` in Netscape jar format (curl's `-c`/`--cookie-jar`, renamed here since `-c` means `--count`)                                          |
 | `--show-cookies`                                | After the run, print every cookie sent or received (name, value, domain/path, flags, expiry) across all `-c N` runs                                                                                   |
 | `--http2`                                       | Request HTTP/2 via ALPN (HTTPS); falls back to HTTP/1.1 if unsupported                                                                                                                                |
 | `--http2-prior-knowledge`                       | Send HTTP/2 over cleartext `http://` (h2c); only when the server is known to speak it                                                                                                                 |
-| `--stats`                                       | Print a percentile summary (min/p50/p90/p95/p99/max/mean/stdev) per phase; needs `-c 2` or more                                                                                                       |
+| `--stats`                                       | Print a percentile summary (min/p50/p90/p95/p99/max/mean/stdev) per phase; needs `-c 2` or more. With `-S`, adds a `STREAM GAPS` footer over inter-chunk gaps, which works from `-c 1`                 |
 | `--assert-status CODE`                          | Fail (exit 1) if the HTTP status is not `CODE`                                                                                                                                                        |
 | `--max-total DUR`                               | Fail if `TOTAL_TIME` exceeds `DUR` (`500ms`, `1s`, `1.5s`)                                                                                                                                            |
 | `--max-ttfb DUR`                                | Fail if `1ST_BYTE` (time to first byte) exceeds `DUR`                                                                                                                                                 |
 | `--max-dns` / `-tcp` / `-tls` / `-download DUR` | Fail if that individual phase exceeds `DUR`                                                                                                                                                           |
 | `--expect-body STR`                             | Fail if the response body does not contain `STR`                                                                                                                                                      |
 | `--expect-regex RE`                             | Fail if the response body does not match regex `RE`                                                                                                                                                   |
-| `--tls-info`                                    | After the run, print TLS certificate details (issuer, expiry with days left, SANs)                                                                                                                    |
+| `--tls-info`                                    | After the run, print TLS certificate details (issuer, expiry with days left, SANs). Only needed when the handshake succeeds - a `<TLS-FAIL>` prints the certificate and the reason automatically       |
 | `--show-headers`                                | After the run, print selected response headers and the cache `HIT`/`MISS` verdict                                                                                                                     |
 | `--server-hints`                                | After the run, print a per-request summary of server/edge/CDN/backend-identifying headers, flagging which values stay constant, vary, or change every request                                         |
 | `--capture-header NAME`                         | Capture a specific response header by name and show its value per request in that summary (repeatable, case-insensitive)                                                                              |
@@ -963,6 +1002,71 @@ With `-c N`, add `--stats` to print a footer with min / p50 / p90 / p95 / p99 /
 max / mean / stdev for every phase (plus total bytes). It appears only with 2 or
 more successful requests, since percentiles are meaningless below that; p95 and
 p99 get useful once you have roughly 20+ runs.
+
+With `-S` it also prints a `STREAM GAPS` footer over inter-chunk timings, which
+follows different rules - see
+[Streaming gap percentiles](#streaming-gap-percentiles--s---stats).
+
+### Streaming gap percentiles (`-S --stats`)
+
+With `-S`, `--stats` prints a second `STREAM GAPS` footer below the phase
+summary, with the same columns computed over the gaps between chunks:
+
+```
+STREAM GAPS  (597 gaps from 3 streams, 200 chunks, 600 SSE events)
+MEASURE             min      p50      p90      p95      p99      max     mean    stdev
+CHUNK_GAP           5ms      5ms      5ms      5ms    300ms    1.20s     13ms     87ms
+  worst single gap 1.20s in run 2
+```
+
+That is the argument for the section in one row. The per-request `AVG_GAP`
+column for those same runs reads `13ms` - a value the stream never produced.
+The p50 says tokens normally arrive every 5ms, the p95 says the stalls are rare
+rather than systemic, and the max says the worst one cost 1.2 seconds.
+
+**It samples gaps, not requests.** The phase summary above it has one sample
+per request, so at `-c 10` its p99 is just its max. Here the unit is one gap, so
+a single 400-chunk response already carries 399 samples and the percentiles are
+meaningful at `-c 1`. Two consequences worth knowing:
+
+- Percentiles saturate on small samples. Below 100 gaps the p99 cell is
+  literally the same observation as the max (below 20, so is p95; below 10, so
+  is p90). The footer says so rather than letting three identical cells read as
+  a plateau.
+- Pooling weights each stream by its length, so a 900-chunk response
+  contributes 45x the samples of a 20-chunk one. That is the right default for
+  a fixed prompt; when responses differ in length the header shows the chunk
+  range so you can see it.
+
+A single stall in a long response never reaches the p99 cell at all: one bad gap
+out of 597 is 0.17% of the samples, and p99 reports the 592nd-ranked value. So
+the footer separately names the run that owned the single worst gap. That also tells you *which* request stalled, which pooling otherwise
+hides: one pathological run among nine clean ones looks the same in the pooled
+tail as ten mediocre ones.
+
+**`EVENT_GAP` and batching.** A chunk is one TCP read, not one token. The tool
+counts SSE frame terminators as chunks arrive, and when some chunk carried more
+than one frame it adds a second row spreading each chunk's gap across the frames
+that chunk delivered:
+
+```
+STREAM GAPS  (117 gaps from 3 streams, 40 chunks, 600 SSE events)
+MEASURE             min      p50      p90      p95      p99      max     mean    stdev
+CHUNK_GAP          50ms     50ms     50ms     50ms    600ms    600ms     64ms     87ms
+EVENT_GAP          10ms     10ms     10ms     10ms    120ms    120ms     13ms     17ms
+  worst single gap 600ms in run 3
+```
+
+Tokens are being generated every 10ms, but the client sees them five at a time
+every 50ms - something between you and the model is batching frames.
+`CHUNK_GAP` is what the UI feels, `EVENT_GAP` is what the model is doing. When
+the server flushes one frame per write the two rows are identical, so only
+`CHUNK_GAP` prints; **the appearance of `EVENT_GAP` at all is itself the
+finding.**
+
+Frame counting is skipped entirely on responses that are not
+`Content-Type: text/event-stream`, so a chunked HTML page full of blank lines is
+never miscounted as a stream of events.
 
 ### Assertions and exit codes (CI, cron, alerting)
 
@@ -1003,12 +1107,55 @@ Prints the server certificate's subject, issuer, expiry date with days remaining
 Alternative Names. Useful for catching a certificate that is about to lapse
 before your users do.
 
+You do not need this flag to diagnose a *failure* - the same block prints
+automatically whenever a run ends in `<TLS-FAIL>`, along with libcurl's
+description of what went wrong. See
+[Automatic TLS failure diagnosis](#automatic-tls-failure-diagnosis). Use
+`--tls-info` when the handshake **succeeds** and you want to see the chain
+anyway, typically to check an expiry date before it becomes an outage.
+
 Certificate details are collected independently of verification, so `-k
 --tls-info` works and is often the fastest way to find out *why* an endpoint
 fails: you get to read the chain it is actually serving even though you cannot
 validate it. Check the SANs first - a certificate with no `subjectAltName`, or
 one that omits the hostname you requested, is the most common cause of a
 `<TLS-FAIL>` that survives pointing `--cacert` at the correct CA.
+
+### Automatic TLS failure diagnosis
+
+`<TLS-FAIL>` in the table says the handshake did not complete. It does not say
+why - and the three usual causes (an expired certificate, a name the
+certificate does not cover, an untrusted CA) share one libcurl error number and
+one marker between them. So when a run fails that way, the details print on
+their own, with no flag:
+
+```
+TLS FAILURE
+  SSL certificate OpenSSL verify result: certificate has expired (10)  (runs 1, 2)
+
+TLS CERTIFICATE
+  subject:  CN = 127.0.0.1
+  issuer:   CN = 127.0.0.1
+  expires:  Jul 30 18:34:58 2026 GMT  (EXPIRED 36 days ago)
+  san:      IP Address:127.0.0.1
+```
+
+**No second request is made.** libcurl records the peer's certificate chain
+from inside the verification callback, *before* it aborts the connection, so
+the certificate shown is the one served on the run that actually failed. That
+matters for an intermittent fault: a diagnostic re-fetch would be diagnosing a
+different connection, and might well succeed and tell you nothing.
+
+Messages are grouped by text, not printed once per run - ten runs against one
+broken endpoint is one line. Distinct messages stay separate, though, and that
+is worth watching for: a host alternating between "certificate has expired" and
+"self-signed certificate" is load-balancing across replicas whose certificates
+differ, which nothing in the table can show you.
+
+If the handshake failed before any certificate was presented - a protocol or
+cipher mismatch, SNI rejected, the connection closed early - the block says so
+instead of printing an empty certificate. Passing `--tls-info` as well does not
+print the certificate twice.
 
 ### TLS verification (`-k`/`--insecure`, `--cacert`)
 
@@ -1360,6 +1507,12 @@ without it, the columns end at `PROTO` and the rest of the table is unaffected.
 > DNS/TCP/TLS/PRE-TRANSFER/1ST_BYTE, which would misreport ordinary connection
 > setup time as an in-stream stall. With fewer than 2 chunks there's nothing to
 > measure a gap between, so both columns show `n/a`.
+>
+> **Note on `AVG_GAP` being a weak summary:** one number per request flattens
+> exactly the behavior `-S` exists to expose - a stream that ticks at 5ms and
+> stalls once for 1.2s reports `AVG_GAP 13ms`, a gap it never produced. Add
+> `--stats` for the full distribution over every gap; see
+> [Streaming gap percentiles](#streaming-gap-percentiles--s---stats).
 
 ---
 
@@ -1370,7 +1523,7 @@ without it, the columns end at `PROTO` and the rest of the table is unaffected.
 | `<TO>`        | Request timed out (`-t`/`--timeout` exceeded)     |
 | `<DNS-FAIL>`  | DNS resolution failed                             |
 | `<CONN-FAIL>` | TCP connection refused or failed                  |
-| `<TLS-FAIL>`  | TLS handshake or certificate verification failed  |
+| `<TLS-FAIL>`  | TLS handshake or certificate verification failed. A `TLS FAILURE` block after the table names the specific cause and prints the offending certificate - no re-run needed |
 | `<NO-DATA>`   | Connection succeeded but server sent nothing back |
 | `<SEND-FAIL>` | Failed to send the request mid-transfer           |
 | `<RECV-FAIL>` | Failed to receive the response mid-transfer       |
