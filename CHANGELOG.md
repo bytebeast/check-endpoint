@@ -1,5 +1,17 @@
 # Changelog
 
+## v2.10.0 (2026-09-03)
+
+### Features
+
+- **check-endpoint.py **: add streaming gap... (AH-2026090361314)
+
+### Documentation
+
+- **README**: update readme (AH-2026081480030)
+
+<!-- also in this release: style -->
+
 ## v2.9.0 (2026-08-13)
 
 ### Features
