@@ -1439,7 +1439,13 @@ def print_tls_diagnosis(results, cert, cert_already_shown=False):
         runs = [str(r["run"]) for r in failed if _msg(r) == msg]
         label = f"run {runs[0]}" if len(runs) == 1 else f"runs {', '.join(runs)}"
         sys.stdout.write(
-            _col(C_ERROR) + f"  {msg}" + end + _col(C_LINENUM) + f"  ({label})" + end + "\n"
+            _col(C_ERROR)
+            + f"  {msg}"
+            + end
+            + _col(C_LINENUM)
+            + f"  ({label})"
+            + end
+            + "\n"
         )
 
     if cert_already_shown:
@@ -1648,9 +1654,7 @@ def print_stream_summary(results):
     plural = "" if len(streams) == 1 else "s"
     events = sum(r["events"] or 0 for r in streams)
     ev = f", {events} SSE events" if events else ""
-    title = (
-        f"STREAM GAPS  ({n} gaps from {len(streams)} stream{plural}, {span}{ev})"
-    )
+    title = f"STREAM GAPS  ({n} gaps from {len(streams)} stream{plural}, {span}{ev})"
     head = "MEASURE".ljust(14) + "".join(c.rjust(9) for c in _SUMMARY_COLS)
     end = RESET if USE_COLOR else ""
     sys.stdout.write("\n" + _col(C_HEADER) + title + end + "\n")
@@ -1689,7 +1693,9 @@ def print_stream_summary(results):
     # three identical-looking cells read as a real plateau.
     if n < 100:
         hit = [
-            name for name, floor in (("p90", 10), ("p95", 20), ("p99", 100)) if n < floor
+            name
+            for name, floor in (("p90", 10), ("p95", 20), ("p99", 100))
+            if n < floor
         ]
         saturated = ", ".join(hit)
         verb = "is" if len(hit) == 1 else "are"
