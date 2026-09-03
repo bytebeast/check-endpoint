@@ -325,7 +325,6 @@ FINAL_FIELD_KEYS = ["redirect", "download", "total", "code", "bytes", "proto"]
 
 TIMEOUT_MARK = "<TO>"
 ERROR_MARK = "<ERR>"
-
 ERROR_MARKERS = {
     pycurl.E_COULDNT_RESOLVE_PROXY: "<DNS-FAIL>",
     pycurl.E_COULDNT_RESOLVE_HOST: "<DNS-FAIL>",
@@ -343,6 +342,13 @@ ERROR_MARKERS = {
     pycurl.E_LOGIN_DENIED: "<AUTH-FAIL>",
     pycurl.E_REMOTE_ACCESS_DENIED: "<DENIED>",
 }
+
+# Derived from the table above rather than restated, so adding a fifth TLS
+# errno to ERROR_MARKERS automatically starts triggering the diagnosis block
+# instead of silently not.
+TLS_FAIL_ERRNOS = frozenset(
+    errno for errno, mark in ERROR_MARKERS.items() if mark == "<TLS-FAIL>"
+)
 
 
 def marker_for_errno(errno):
@@ -364,6 +370,30 @@ def human_time(seconds):
     minutes = int(seconds // 60)
     rem = seconds - minutes * 60
     return f"{minutes}m{rem:.0f}s"
+
+
+def human_gap(seconds):
+    """human_time(), but keeping sub-millisecond resolution.
+
+    human_time() collapses everything below a millisecond into the literal
+    "<1ms", which is the right call for a phase timer - nobody cares whether
+    DNS took 300us or 700us. It is the wrong call for an inter-chunk gap
+    distribution. Chunks routinely arrive in bursts (one TLS record often
+    carries several, and a buffering proxy flushes several at once), so a
+    large share of the gaps in a healthy stream are genuinely sub-millisecond
+    and the whole min/p50/p90 end of the row would read "<1ms <1ms <1ms" -
+    hiding the very contrast with the p99 that the row exists to show.
+
+    At or above 1ms this defers to human_time so the gap table and the phase
+    table agree wherever their ranges overlap. "0.42ms" still satisfies
+    _colorize_time's float(value[:-2]) parse, so it colorizes like any other
+    millisecond value.
+    """
+    if seconds is None:
+        return ""
+    if seconds < 0.001:
+        return f"{seconds * 1000:.2f}ms"
+    return human_time(seconds)
 
 
 def human_bytes(n):
@@ -814,6 +844,10 @@ def run_once(
     curl.setopt(curl.URL, url)
 
     chunk_times = []
+    chunk_events = []
+    # One-element list, not a plain bool: _header_cb has to be able to
+    # rebind it and both callbacks are closures over this scope.
+    is_event_stream = [False]
     body_buf = bytearray()
 
     def _write_cb(chunk):
@@ -824,6 +858,24 @@ def run_once(
         # timestamps beyond the -S counter that is the point of -S.
         if stream_mode:
             chunk_times.append(time.perf_counter())
+            # Count SSE frame terminators so a chunk carrying five events
+            # can be told apart from a chunk carrying one - the difference
+            # between "the server is slow" and "a proxy is batching". Both
+            # spellings are legal under the SSE grammar and cannot overlap
+            # as substrings, so summing two counts can't double-count. Two
+            # bytes.count() calls are memchr scans in C, cheap enough to
+            # belong here on SSE-sized chunks (~0.2us on a 50-byte frame),
+            # and skipped entirely on anything that isn't an event stream -
+            # see _header_cb. Carrying a tail buffer between chunks to
+            # catch a terminator split exactly across two reads would not
+            # be cheap enough: that split needs the read boundary to land
+            # between the two newlines, and it undercounts by one event
+            # when it happens.
+            chunk_events.append(
+                chunk.count(b"\n\n") + chunk.count(b"\r\n\r\n")
+                if is_event_stream[0]
+                else 0
+            )
         if capture_body:
             buffered = len(body_buf)
             if buffered < body_limit:
@@ -836,21 +888,47 @@ def run_once(
     curl.setopt(curl.WRITEFUNCTION, _write_cb)
 
     header_lines = []
-    if capture_headers:
+    if capture_headers or stream_mode:
 
         def _header_cb(line):
-            try:
-                header_lines.append(line.decode("iso-8859-1"))
-            except Exception:
-                pass
+            if capture_headers:
+                try:
+                    header_lines.append(line.decode("iso-8859-1"))
+                except Exception:
+                    pass
+            # -S needs to know whether the body is actually an SSE stream
+            # before it starts scanning chunks for frame terminators. Two
+            # reasons this can't just be assumed. Correctness: a chunked
+            # HTML page or an NDJSON feed is full of blank lines that are
+            # not SSE frames, and counting them would invent an event rate
+            # out of nothing. Cost: the scan is proportional to chunk size,
+            # which is ~0.2us on a 50-byte SSE frame but ~40us on a 64 KiB
+            # bulk-download chunk - and that lands in BODY_DL, which is the
+            # one thing the write callback must not distort.
+            #
+            # Assigned, not or-ed: on a redirect chain every hop's headers
+            # come through here, and it is the final response's type that
+            # decides.
+            if stream_mode and line[:13].lower() == b"content-type:":
+                is_event_stream[0] = b"text/event-stream" in line.lower()
 
         curl.setopt(curl.HEADERFUNCTION, _header_cb)
 
-    if capture_cert:
-        try:
-            curl.setopt(pycurl.OPT_CERTINFO, 1)
-        except Exception:
-            pass
+    # Set unconditionally, not just under --tls-info. libcurl fills
+    # CURLINFO_CERTINFO from inside the verify callback, BEFORE it aborts a
+    # connection that fails verification, so leaving this on is what lets a
+    # <TLS-FAIL> run explain itself (see print_tls_diagnosis) without a
+    # second request - by the time the failure is known, the chance to ask
+    # for the certificate has already passed. It is a no-op on plain http://,
+    # and on TLS it costs a measured ~80us of the handshake for a 2048-bit
+    # chain: two orders of magnitude below real-network handshake jitter,
+    # below the whole-millisecond resolution TLS_HANDSHAKE is printed at,
+    # and a cost --prometheus mode (want_cert=True) already paid on every
+    # scrape.
+    try:
+        curl.setopt(pycurl.OPT_CERTINFO, 1)
+    except Exception:
+        pass
 
     curl.setopt(curl.FOLLOWLOCATION, True)
     curl.setopt(curl.TIMEOUT_MS, int(timeout * 1000))
@@ -934,6 +1012,7 @@ def run_once(
     prev_time = 0.0
     failed = False
     fail_errno = None
+    fail_errmsg = None
 
     try:
         while True:
@@ -968,13 +1047,19 @@ def run_once(
             multi.select(0.001)
 
         num_q, ok_list, err_list = multi.info_read()
-        for _handle, errno, _errmsg in err_list:
+        for _handle, errno, errmsg in err_list:
             failed = True
             fail_errno = errno
+            # libcurl's own message is the only place the SPECIFIC cause
+            # survives - "certificate has expired" vs "self-signed
+            # certificate" vs "subject name does not match" all collapse to
+            # the same errno, and so to the same <TLS-FAIL> marker.
+            fail_errmsg = errmsg or None
 
     except pycurl.error as exc:
         failed = True
         fail_errno = exc.args[0] if exc.args else None
+        fail_errmsg = exc.args[1] if len(exc.args) > 1 else None
 
     finally:
         multi.remove_handle(curl)
@@ -993,6 +1078,7 @@ def run_once(
         "ip": ip_display,
         "failed": failed,
         "errno": fail_errno,
+        "errmsg": fail_errmsg,
         "marker": None,
         "phases": compute_phase_deltas(curl),
         "code": None,
@@ -1003,9 +1089,17 @@ def run_once(
         "chunks": None,
         "avggap": None,
         "maxgap": None,
+        "gaps": None,
+        "events": None,
+        "event_gaps": None,
         "headers": parse_response_headers(header_lines) if capture_headers else None,
         "body": bytes(body_buf) if capture_body else None,
-        "cert": extract_cert_info(curl) if capture_cert else None,
+        # Extracted regardless of --tls-info: on a <TLS-FAIL> run this is
+        # the peer's chain as libcurl saw it just before giving up, and it
+        # is only reachable from this handle, which is about to be closed.
+        # Parsing a chain that nothing goes on to print is a few dict
+        # builds, all of it after every timer has been read.
+        "cert": extract_cert_info(curl),
         # Carried into --json / --prometheus so a run made without certificate
         # verification is never mistaken for a clean one. With -k the whole
         # <TLS-FAIL> family (E_PEER_FAILED_VERIFICATION, E_SSL_CACERT,
@@ -1103,6 +1197,43 @@ def run_once(
             gaps = [chunk_times[i] - chunk_times[i - 1] for i in range(1, chunk_count)]
             res["avggap"] = sum(gaps) / len(gaps)
             res["maxgap"] = max(gaps)
+            # Keep every gap, not just the mean and max, so --stats can pool
+            # them into one distribution (see print_stream_summary). This is
+            # what makes gap percentiles meaningful at -c 1: a single
+            # 400-chunk response is 399 samples, where the per-request rows
+            # in print_summary only ever have -c samples between them.
+            # Cost is one float per chunk, so a 100k-chunk stream is under a
+            # megabyte and is freed with the results list; nothing iterates
+            # the result dict wholesale, so this stays out of --prometheus
+            # and the --capture-body report, which name their keys explicitly.
+            res["gaps"] = gaps
+
+            # Per-event gaps, amortized. When a chunk carries k SSE frames,
+            # all k arrived at the same instant as far as the socket is
+            # concerned, so recording k identical timestamps would report
+            # k-1 zero-length gaps and drag the median to 0 - technically
+            # true, useless to read. Spreading the chunk's gap evenly over
+            # the frames it delivered answers the question actually being
+            # asked ("how fast are tokens arriving?") and degenerates to
+            # exactly res["gaps"] when the server flushes one frame per
+            # write. Frames carried by the FIRST chunk are excluded along
+            # with that chunk's arrival, for the reason above.
+            events = sum(chunk_events)
+            res["events"] = events
+            if events:
+                event_gaps = []
+                for i in range(1, chunk_count):
+                    gap = gaps[i - 1]
+                    k = chunk_events[i]
+                    if k > 1:
+                        event_gaps.extend([gap / k] * k)
+                    else:
+                        # k == 0 is a chunk that completed no frame - a
+                        # partial frame, or a non-SSE stream where the
+                        # count is meaningless. Either way the chunk did
+                        # arrive, so its gap is still one sample.
+                        event_gaps.append(gap)
+                res["event_gaps"] = event_gaps
             stream_stats["avggap"] = human_time(res["avggap"])
             stream_stats["maxgap"] = human_time(res["maxgap"])
         else:
@@ -1276,6 +1407,69 @@ def extract_cert_info(curl):
     return info
 
 
+def print_tls_diagnosis(results, cert, cert_already_shown=False):
+    """Explain a <TLS-FAIL> run automatically, without being asked.
+
+    The marker says the handshake did not complete; it does not say why, and
+    the three usual causes - an expired certificate, a name the certificate
+    does not cover, and a CA the client does not trust - are one errno and
+    one marker between them. Both halves of the answer are already on the
+    failed handle by the time the failure is known: libcurl's error string
+    carries the OpenSSL verify result, and CURLINFO_CERTINFO still holds the
+    peer's chain, because libcurl fills it from the verify callback before
+    aborting. So this prints what was already collected rather than telling
+    the user to run again with --tls-info - which is the wrong advice for an
+    intermittent failure, since the second run may well succeed.
+    """
+    failed = [r for r in results if r["errno"] in TLS_FAIL_ERRNOS]
+    if not failed:
+        return
+    end = RESET if USE_COLOR else ""
+    sys.stdout.write("\n" + _col(C_HEADER) + "TLS FAILURE" + end + "\n")
+
+    # Grouped by message, not one line per run: -c 10 against one broken
+    # endpoint is the same sentence ten times. Distinct messages are worth
+    # keeping apart, though - a host that alternates between "expired" and
+    # "unable to get local issuer" is load-balancing across replicas whose
+    # certificates differ, which the table alone cannot show.
+    def _msg(r):
+        return r.get("errmsg") or f"libcurl errno {r['errno']}"
+
+    for msg in dict.fromkeys(_msg(r) for r in failed):
+        runs = [str(r["run"]) for r in failed if _msg(r) == msg]
+        label = f"run {runs[0]}" if len(runs) == 1 else f"runs {', '.join(runs)}"
+        sys.stdout.write(
+            _col(C_ERROR)
+            + f"  {msg}"
+            + end
+            + _col(C_LINENUM)
+            + f"  ({label})"
+            + end
+            + "\n"
+        )
+
+    if cert_already_shown:
+        # --tls-info already printed the block below; repeating it would
+        # just push the message above off the screen.
+        sys.stdout.flush()
+        return
+    if cert is None:
+        sys.stdout.write(
+            _col(C_LINENUM)
+            + "  no peer certificate to show: the handshake failed before one\n"
+            + "  was presented (protocol or cipher mismatch, SNI rejected, or\n"
+            + "  the connection closed early)"
+            + end
+            + "\n"
+        )
+        sys.stdout.flush()
+        return
+    # print_tls_info already renders "EXPIRED n days ago" in red against the
+    # expiry date, which is the single most likely cause and the one worth
+    # putting in front of someone who did not ask for it.
+    print_tls_info(cert)
+
+
 # ── assertions / thresholds ───────────────────────────────────────────────────
 
 
@@ -1345,6 +1539,33 @@ def _percentile(sorted_vals, p):
     return sorted_vals[max(0, min(k, len(sorted_vals) - 1))]
 
 
+_SUMMARY_COLS = ["min", "p50", "p90", "p95", "p99", "max", "mean", "stdev"]
+
+
+def _stat_values(sorted_vals):
+    """The eight _SUMMARY_COLS numbers for an already-sorted, non-empty list."""
+    return [
+        sorted_vals[0],
+        _percentile(sorted_vals, 50),
+        _percentile(sorted_vals, 90),
+        _percentile(sorted_vals, 95),
+        _percentile(sorted_vals, 99),
+        sorted_vals[-1],
+        statistics.fmean(sorted_vals),
+        statistics.pstdev(sorted_vals) if len(sorted_vals) > 1 else 0.0,
+    ]
+
+
+# Right-justify on the PLAIN text width, then wrap in the standard timing /
+# byte colorizer so ANSI codes do not throw off column alignment.
+def _cell_time(plain, width=9):
+    return " " * max(width - len(plain), 0) + _colorize_time(plain)
+
+
+def _cell_bytes(plain, width=9):
+    return " " * max(width - len(plain), 0) + _colorize_bytes(plain)
+
+
 _SUMMARY_PHASES = [
     ("dns", "DNS"),
     ("tcp", "TCP_CONNECT"),
@@ -1363,41 +1584,127 @@ def print_summary(results):
     nfail = len(results) - len(ok)
     if len(ok) < 2:
         return
-    cols = ["min", "p50", "p90", "p95", "p99", "max", "mean", "stdev"]
     title = f"SUMMARY  ({len(ok)} ok, {nfail} failed)"
-    head = "PHASE".ljust(14) + "".join(c.rjust(9) for c in cols)
+    head = "PHASE".ljust(14) + "".join(c.rjust(9) for c in _SUMMARY_COLS)
     end = RESET if USE_COLOR else ""
     sys.stdout.write("\n" + _col(C_HEADER) + title + end + "\n")
     sys.stdout.write(_col(C_HEADER) + head + end + "\n")
-
-    # Right-justify on the PLAIN text width, then wrap in the standard timing
-    # / byte colorizer so ANSI codes do not throw off column alignment.
-    def _cell_time(plain, width=9):
-        return " " * max(width - len(plain), 0) + _colorize_time(plain)
-
-    def _cell_bytes(plain, width=9):
-        return " " * max(width - len(plain), 0) + _colorize_bytes(plain)
 
     def stat_row(label, values, fmt, cell):
         vals = sorted(v for v in values if v is not None)
         if not vals:
             return
-        computed = [
-            vals[0],
-            _percentile(vals, 50),
-            _percentile(vals, 90),
-            _percentile(vals, 95),
-            _percentile(vals, 99),
-            vals[-1],
-            statistics.fmean(vals),
-            statistics.pstdev(vals) if len(vals) > 1 else 0.0,
-        ]
+        computed = _stat_values(vals)
         lbl = _col(_SUBTEXT0) + label.ljust(14) + end
         sys.stdout.write(lbl + "".join(cell(fmt(v)) for v in computed) + "\n")
 
     for key, label in _SUMMARY_PHASES:
         stat_row(label, [r["phases"].get(key) for r in ok], human_time, _cell_time)
     stat_row("TOTAL_BYTES", [r["bytes"] for r in ok], human_bytes, _cell_bytes)
+    sys.stdout.flush()
+
+
+def print_stream_summary(results):
+    """Inter-chunk gap percentiles for -S runs, pooled across every stream.
+
+    Deliberately NOT another row in print_summary. That table's unit of
+    measurement is one request: with -c 10 every row has ten samples, so its
+    p99 is just its max, and a p99 taken over per-request AVG_GAPs would be a
+    percentile of averages - smoothed twice, and blind to precisely the one
+    mid-stream stall that -S exists to find. Here the unit is one gap, so a
+    single 400-chunk response already carries 399 samples and the percentiles
+    say something real even at -c 1.
+
+    The first chunk's arrival is excluded for the same reason AVG_GAP and
+    MAX_GAP exclude it: that span is DNS + TCP + TLS + PRE-TRANSFER +
+    1ST_BYTE, already reported by those columns, and folding it in here would
+    show up as a fake stall at the top of the distribution. It is the same
+    TTFT/ITL split that vLLM and TGI report as two separate numbers.
+
+    Caveat worth remembering when reading the rows: a chunk is one libcurl
+    write-callback invocation - one TCP read - not one token. A buffering
+    proxy (nginx proxy_buffering, some CDN configs) or simply a fast stream
+    coalesces several SSE events into a single chunk. CHUNK_GAP therefore
+    measures the cadence the client actually experiences, which is usually
+    what you want; EVENT_GAP divides each chunk's gap across the SSE frames
+    that chunk delivered, which is the closer read of per-token latency.
+    They are the same numbers when the server flushes one frame per write,
+    and EVENT_GAP is only printed when they diverge - so seeing that second
+    row at all is itself the finding that something is batching.
+    """
+    # Failed runs return before the gap block is ever reached, so their
+    # "gaps" is still None - a truthiness check covers both them and the
+    # <2-chunk case where there is no inter-chunk gap to speak of.
+    streams = [r for r in results if r.get("gaps")]
+    if not streams:
+        return
+    gaps = sorted(g for r in streams for g in r["gaps"])
+    n = len(gaps)
+
+    # Pooling weights each stream by its length, so a 900-chunk response
+    # contributes 45x the samples of a 20-chunk one. That is the right
+    # default for a fixed prompt, but it is worth being able to see when the
+    # responses were not the same size - hence the chunk span in the title.
+    counts = [r["chunks"] for r in streams]
+    span = (
+        f"{counts[0]} chunks"
+        if min(counts) == max(counts)
+        else f"{min(counts)}-{max(counts)} chunks"
+    )
+    plural = "" if len(streams) == 1 else "s"
+    events = sum(r["events"] or 0 for r in streams)
+    ev = f", {events} SSE events" if events else ""
+    title = f"STREAM GAPS  ({n} gaps from {len(streams)} stream{plural}, {span}{ev})"
+    head = "MEASURE".ljust(14) + "".join(c.rjust(9) for c in _SUMMARY_COLS)
+    end = RESET if USE_COLOR else ""
+    sys.stdout.write("\n" + _col(C_HEADER) + title + end + "\n")
+    sys.stdout.write(_col(C_HEADER) + head + end + "\n")
+
+    def gap_row(label, values):
+        lbl = _col(_SUBTEXT0) + label.ljust(14) + end
+        row = "".join(_cell_time(human_gap(v)) for v in _stat_values(values))
+        sys.stdout.write(lbl + row + "\n")
+
+    gap_row("CHUNK_GAP", gaps)
+
+    # EVENT_GAP only earns its line when the two actually differ, i.e. when
+    # some chunk carried more than one frame. With one frame per write it is
+    # the same list of numbers and printing it twice implies a distinction
+    # that isn't there.
+    event_gaps = sorted(g for r in streams if r["event_gaps"] for g in r["event_gaps"])
+    if event_gaps and len(event_gaps) != n:
+        gap_row("EVENT_GAP", event_gaps)
+
+    # Pooling hides WHICH request stalled, and with -c that is usually the
+    # first thing you want to know - one pathological run and nine clean ones
+    # look the same in the pooled tail as ten mediocre ones.
+    if len(streams) > 1:
+        worst = max(streams, key=lambda r: r["maxgap"])
+        sys.stdout.write(
+            _col(C_LINENUM)
+            + f"  worst single gap {human_gap(worst['maxgap'])} in run {worst['run']}"
+            + end
+            + "\n"
+        )
+
+    # Nearest-rank percentiles saturate at the top of small samples: with
+    # n < 100 the p99 cell is literally the same observation as max, with
+    # n < 20 so is p95, and with n < 10 so is p90. Say so rather than let
+    # three identical-looking cells read as a real plateau.
+    if n < 100:
+        hit = [
+            name
+            for name, floor in (("p90", 10), ("p95", 20), ("p99", 100))
+            if n < floor
+        ]
+        saturated = ", ".join(hit)
+        verb = "is" if len(hit) == 1 else "are"
+        sys.stdout.write(
+            _col(C_LINENUM)
+            + f"  note: {n} gaps - {saturated} {verb} the same sample as max"
+            + end
+            + "\n"
+        )
     sys.stdout.flush()
 
 
@@ -2503,7 +2810,9 @@ FAILURE MARKERS
   <TO>          the request timed out (-t/--timeout exceeded)
   <DNS-FAIL>    DNS resolution failed
   <CONN-FAIL>   TCP connection was refused/failed
-  <TLS-FAIL>    TLS handshake or certificate verification failed
+  <TLS-FAIL>    TLS handshake or certificate verification failed. A TLS
+                FAILURE block after the table names the specific cause and
+                prints the offending certificate; no re-run needed
   <NO-DATA>     connection succeeded but the server sent nothing back
   <SEND-FAIL>   failed sending the request mid-transfer
   <RECV-FAIL>   failed receiving the response mid-transfer
@@ -2674,7 +2983,15 @@ WHAT IT CAN FIND
       means the request was redirected to HTTPS - check REDIRECT
     - Certificate expiry: pair with --tls-info for issuer, SANs, and days
       remaining before the certificate lapses
-    - <TLS-FAIL>: expired cert, hostname mismatch, or untrusted CA
+    - <TLS-FAIL>: expired cert, hostname mismatch, or untrusted CA. All
+      three produce the same marker, so the TLS FAILURE block below the
+      table is what tells them apart: it prints libcurl's verify result
+      ("certificate has expired", "self-signed certificate", "no
+      alternative certificate subject name matches...") and then the
+      certificate itself, with an expired date called out in red. Check
+      the san: line against the hostname you requested for the mismatch
+      case - a certificate can be perfectly valid and still not cover the
+      name you asked for
 
   [PRE-TRANSFER] Client-side & proxy setup
     - Non-zero PRE-TRANSFER: this phase is internal libcurl bookkeeping
@@ -2807,6 +3124,31 @@ WHAT IT CAN FIND
     network jitter, reverse-proxy buffering, and load-balancer hops are
     all included, not just model-side generation time.
 
+    One caveat on reading it as literal ITL: a chunk is one libcurl
+    write-callback invocation - one TCP read - not one token. A
+    buffering proxy, or simply a fast stream, coalesces several SSE
+    events into a single chunk, which lowers CHUNKS and widens each gap.
+
+    Add --stats to get the shape of that cadence rather than just its
+    average and worst case: a STREAM GAPS section prints
+    min/p50/p90/p95/p99/max/mean/stdev over every inter-chunk gap,
+    pooled across all runs. Note this pools GAPS, not requests, so it is
+    meaningful even at -c 1 - a single 400-chunk response is already 399
+    samples, where the per-phase SUMMARY rows above it only ever have -c
+    samples between them. AVG_GAP alone cannot distinguish a stream that
+    ticks evenly from one that mostly races and stalls twice; a p50 far
+    below the p99 is that second stream. Since a lone stall in a long
+    response sits below even the p99, the section also names the run
+    that owned the single worst gap.
+
+    That section counts SSE frame terminators as it goes, and when some
+    chunk carried more than one frame it adds an EVENT_GAP row spreading
+    each chunk's gap across the frames that chunk delivered - the closer
+    read of per-token latency. With one frame per write the two rows
+    would be identical, so only CHUNK_GAP is shown; the appearance of
+    EVENT_GAP is itself the signal that something between you and the
+    model is batching frames together.
+
     - Token stutter / uneven generation: a large gap between AVG_GAP and
       MAX_GAP means the stream paused somewhere in the middle, even
       though BODY_DL and TOTAL_TIME look fine in aggregate. This is
@@ -2908,6 +3250,12 @@ ANALYSIS, CHECKS, AND EXPORT
     requests succeeded, since percentiles need multiple samples; p95/p99
     only become meaningful once you have roughly 20 or more runs.
 
+    With -S/--stream, a second STREAM GAPS section follows with the same
+    columns computed over every inter-chunk gap, pooled across runs.
+    That one samples gaps rather than requests, so it works at -c 1 and
+    saturates far later - see the [CHUNKS] [AVG_GAP] [MAX_GAP] section
+    of --help.
+
   Assertions (turn the probe into a pass/fail check)
     Setting any assertion makes the tool exit non-zero if ANY single
     request breaches, so it drops straight into CI, cron, and alerting:
@@ -2924,6 +3272,13 @@ ANALYSIS, CHECKS, AND EXPORT
     After the run, print the server certificate's subject, issuer, expiry
     date with days remaining (yellow under 30 days, red under 15), and
     Subject Alternative Names.
+
+    Not needed to diagnose a failure: when a run ends in <TLS-FAIL> this
+    block is printed automatically, along with libcurl's own description
+    of what went wrong. The certificate is read off the failed connection
+    itself - libcurl records the peer's chain before it aborts - so the
+    cause is reported from the run that actually failed, rather than from
+    a retry that might well succeed.
 
   --show-headers
     After the run, print selected response headers (server, content-type,
@@ -3782,8 +4137,16 @@ NOTE ON -p/-P (IP pinning)
 
     if args.stats:
         print_summary(results)
+        # Only with -S: without it no chunk timestamps were taken at all, so
+        # there is nothing to pool and the section is silently absent rather
+        # than printing an empty table.
+        if args.stream:
+            print_stream_summary(results)
     if args.tls_info:
         print_tls_info(cert)
+    # Unconditional: a handshake failure is exactly the case where the user
+    # did not know to ask for --tls-info in advance.
+    print_tls_diagnosis(results, cert, cert_already_shown=args.tls_info)
     if args.show_headers:
         print_headers_block(results)
     if args.show_cookies:
