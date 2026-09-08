@@ -23,8 +23,8 @@ parallel -j${parallel_jobs} --joblog probe.log --results 'output/{}.txt' \
     :::: <(awk 1 ${ips_file})
 ```
 
-Drop your backend IPs in `ips.txt`, one per line, and run it. That's the whole
-thing.
+Update the url, drop your backend IPs in `ips.txt`, one per line, and run it.
+That's the whole thing.
 
 ### What's going on here
 
