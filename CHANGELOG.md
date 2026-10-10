@@ -1,5 +1,47 @@
 # Changelog
 
+## v3.0.0 (2026-10-10)
+
+### Breaking changes
+
+- **exit codes**: a request that gets no HTTP response (DNS, connect, TLS,
+  timeout) now exits `3` when no assertion is set. It used to exit `0`, so
+  `check-endpoint URL && deploy` carried on against a dead endpoint.
+- **exporter**: `check_endpoint_requests_total` / `check_endpoint_failures_total`
+  are now real counters (cumulative since start). As per-scrape gauges they
+  broke Prometheus naming rules and `promtool check metrics` rejected the
+  output. The per-scrape values are `check_endpoint_scrape_probes` and
+  `check_endpoint_scrape_probe_failures`.
+
+### Bug Fixes
+
+- **failure placement**: with newer libcurl (seen on 8.22), a refused
+  connection or failed TLS handshake printed invented `<1ms` PRE-TRANSFER and
+  1ST_BYTE times and put `<CONN-FAIL>` / `<TLS-FAIL>` under BODY_DL instead of
+  TCP_CONNECT / TLS_HANDSHAKE. libcurl fills those timers in when a transfer
+  ends, even a failed one; phases now only count once the phases before them
+  really completed. The same fix applies to the timings in `--capture` files.
+- **column overflow**: `<CONN-FAIL>`, `<RECV-FAIL>`, `<SEND-FAIL>`,
+  `<AUTH-FAIL>` and `<DNS-FAIL>` were wider than the columns they land in and
+  shifted the rest of the row. Marker columns are now sized from the marker
+  table.
+- **piped output**: an ANSI reset code was written at the end of every row and
+  in the bytes column even when stdout was not a terminal.
+- **exporter**: `check_endpoint_up` was `1` when any probe in the scrape
+  succeeded, contradicting its help text; it now reflects the most recent
+  probe.
+- **exporter**: p90/p95/p99 were published from as few as 2 samples, where
+  they are just the max. Each percentile now needs enough samples (p90: 10,
+  p95: 20, p99: 100), matching `--stats`.
+
+### Features
+
+- `--no-color`, and the `NO_COLOR` environment variable is honoured
+- exporter: `check_endpoint_last_error{reason="..."}` and
+  `check_endpoint_total_seconds_samples`
+- test suite (`tests/test_check_endpoint.py`, 23 tests, all against local
+  servers)
+
 ## v2.10.0 (2026-09-03)
 
 ### Features

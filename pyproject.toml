@@ -6,7 +6,7 @@
 [project]
 name = "check-endpoint"
 # Duplicated as APP_VERSION in check-endpoint.py. Bump both together.
-version = "2.10.0"
+version = "3.0.0"
 
 # THE single source of truth for the minimum Python version.
 #
@@ -58,6 +58,10 @@ ignore = [
 # S603 flags every subprocess call that is not shell=True. The arguments are
 # hardcoded git invocations from this file, with no user input reaching them.
 ".github/scripts/release.py" = ["S603"]
+
+# Tests assert (S101) and run the script and openssl as subprocesses with
+# fixed argument lists (S603/S607); none of it takes outside input.
+"tests/*" = ["S101", "S603", "S607"]
 
 [tool.ruff.format]
 quote-style = "double"

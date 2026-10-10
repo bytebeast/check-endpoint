@@ -28,6 +28,7 @@ import shlex
 import socket
 import statistics
 import sys
+import threading
 import time
 from collections import Counter
 from datetime import datetime
@@ -68,7 +69,7 @@ except ImportError:
     sys.exit(1)
 
 
-APP_VERSION = "2.10.0"
+APP_VERSION = "3.0.0"
 DEFAULT_USER_AGENT = f"check-endpoint/{APP_VERSION}"
 
 # Sent on every request unless the caller supplies their own Accept header
@@ -110,10 +111,11 @@ USER_AGENTS = {
 }
 
 # ── Catppuccin Mocha theme ────────────────────────────────────────────────────
-# Colors are only emitted when stdout is a real terminal.
+# Colors are only emitted when stdout is a real terminal, NO_COLOR is unset
+# (https://no-color.org) and --no-color was not passed (main() re-checks).
 # Pipe output to a file or another command and you get plain text.
 
-USE_COLOR = sys.stdout.isatty()
+USE_COLOR = sys.stdout.isatty() and not os.environ.get("NO_COLOR")
 
 RESET = "\033[0m"
 BOLD = "\033[1m"
@@ -355,6 +357,19 @@ def marker_for_errno(errno):
     return ERROR_MARKERS.get(errno, ERROR_MARK)
 
 
+# Every column a failure marker can land in must fit the longest marker plus
+# a separating space. DNS (9) and 1ST_BYTE / BODY_DL (10) were narrower than
+# <CONN-FAIL> / <RECV-FAIL> / <DNS-FAIL>, so the marker ran into the next
+# cell and shifted it. Derived from the table so new markers always fit.
+MARKER_WIDTH = (
+    max(len(m) for m in (*ERROR_MARKERS.values(), TIMEOUT_MARK, ERROR_MARK)) + 1
+)
+for _field in FIELDS:
+    if _field[0] in LIVE_FIELD_KEYS or _field[0] in ("redirect", "download"):
+        _field[2] = max(_field[2], MARKER_WIDTH)
+del _field
+
+
 # ── human-readable formatting ─────────────────────────────────────────────────
 
 
@@ -426,7 +441,7 @@ def write_cell(text: str, width: int, color: str = "", reset: bool = True) -> No
 def print_header():
     for _, label, width in FIELDS:
         write_cell(label, width, color=C_HEADER)
-    sys.stdout.write(RESET + "\n")
+    sys.stdout.write(_col(RESET) + "\n")
     sys.stdout.flush()
 
 
@@ -441,9 +456,51 @@ RAW_TIME_GETTERS = {
 }
 
 
+_TLS_SCHEMES = ("https://", "ftps://", "imaps://", "pop3s://", "smtps://", "ldaps://")
+
+
+def _tls_applies(curl):
+    """True if the request (current hop, after redirects) uses TLS."""
+    try:
+        url = curl.getinfo(pycurl.EFFECTIVE_URL) or ""
+    except pycurl.error:
+        return False
+    return url.lower().startswith(_TLS_SCHEMES)
+
+
+def _phase_reached(curl, key):
+    """
+    True only if libcurl's timer for `key` reflects a phase that really
+    happened, not just a non-zero number.
+
+    Newer libcurl (seen on 8.2x) fills PRETRANSFER_TIME and STARTTRANSFER_TIME
+    with the elapsed time when a transfer ENDS, even if it ended because the
+    connection was refused or the TLS handshake failed. Reading those timers
+    at face value printed a "1ST_BYTE <1ms" for a server that never accepted
+    the connection, and pushed the failure marker into BODY_DL. So each phase
+    also requires its predecessors: nothing after TCP counts unless
+    CONNECT_TIME is set, and nothing after TLS counts on a TLS URL unless
+    APPCONNECT_TIME is set. CONNECT_TIME and APPCONNECT_TIME are only ever
+    set on success, so they are safe anchors.
+    """
+    if RAW_TIME_GETTERS[key](curl) <= 0:
+        return False
+    if key in ("dns", "tcp"):
+        return True
+    if curl.getinfo(pycurl.CONNECT_TIME) <= 0:
+        return False
+    if key == "tls":
+        return True
+    if _tls_applies(curl) and curl.getinfo(pycurl.APPCONNECT_TIME) <= 0:
+        return False
+    if key == "ttfb" and curl.getinfo(pycurl.PRETRANSFER_TIME) <= 0:
+        return False
+    return True
+
+
 def try_print_live_field(curl, key, prev_time, row_col=""):
     raw = RAW_TIME_GETTERS[key](curl)
-    if raw <= 0:
+    if raw <= 0 or not _phase_reached(curl, key):
         return False, prev_time
     delta = max(raw - prev_time, 0.0)
     value = human_time(delta)
@@ -484,9 +541,17 @@ def _live_phase_already_passed(curl, key):
     marker ends up mis-attributed to TLS_HANDSHAKE instead of the phase
     that actually failed, because pointer never left it.
     """
-    idx = LIVE_FIELD_KEYS.index(key)
-    return any(
-        RAW_TIME_GETTERS[later](curl) > 0 for later in LIVE_FIELD_KEYS[idx + 1 :]
+    # Only TLS can be structurally absent, and only on a non-TLS URL once the
+    # TCP connection exists. Inferring "passed" from later timers alone was
+    # wrong: libcurl sets PRETRANSFER/STARTTRANSFER at the end of a FAILED
+    # transfer too (see _phase_reached), which made a refused connection
+    # skip TCP and a failed TLS handshake skip TLS, so the marker landed in
+    # BODY_DL instead of on the phase that failed.
+    if key != "tls" or _tls_applies(curl):
+        return False
+    return curl.getinfo(pycurl.CONNECT_TIME) > 0 and any(
+        RAW_TIME_GETTERS[later](curl) > 0
+        for later in LIVE_FIELD_KEYS[LIVE_FIELD_KEYS.index(key) + 1 :]
     )
 
 
@@ -645,7 +710,7 @@ def _write_final_cell(key: str, value: str, width: int, row_col: str) -> None:
             if value.endswith("KB")
             else _col(_GREEN)
         )
-        sys.stdout.write(b_color + padded + RESET)
+        sys.stdout.write(b_color + padded + _col(RESET))
         sys.stdout.flush()
         return
 
@@ -1157,7 +1222,7 @@ def run_once(
                         write_cell(res["marker"], field_width(key), color=_col(C_ERROR))
                     else:
                         write_empty_cell(key, field_width(key))
-            sys.stdout.write(RESET + "\n")
+            sys.stdout.write(_col(RESET) + "\n")
             sys.stdout.flush()
         curl.close()
         return res
@@ -1246,7 +1311,7 @@ def run_once(
                 stream_stats[key] if key in stream_stats else get_final_value(curl, key)
             )
             _write_final_cell(key, value, field_width(key), rcol)
-        sys.stdout.write(RESET + "\n")
+        sys.stdout.write(_col(RESET) + "\n")
         sys.stdout.flush()
 
     curl.close()
@@ -1337,7 +1402,10 @@ def compute_phase_deltas(curl):
     prev = 0.0
     for key, info in steps:
         raw = curl.getinfo(info)
-        if not raw or raw <= 0:
+        # _phase_reached rejects the timers libcurl fills in when a transfer
+        # fails, so --json and --prometheus never report a first byte for a
+        # connection that was refused.
+        if not raw or raw <= 0 or not _phase_reached(curl, key):
             out[key] = None
             continue
         out[key] = max(raw - prev, 0.0)
@@ -1345,7 +1413,9 @@ def compute_phase_deltas(curl):
     total = curl.getinfo(pycurl.TOTAL_TIME)
     ttfb_raw = curl.getinfo(pycurl.STARTTRANSFER_TIME)
     out["download"] = (
-        max(total - ttfb_raw, 0.0) if total and ttfb_raw and ttfb_raw > 0 else None
+        max(total - ttfb_raw, 0.0)
+        if total and out["ttfb"] is not None and ttfb_raw > 0
+        else None
     )
     out["total"] = total if total and total > 0 else None
     return out
@@ -2118,7 +2188,12 @@ def _prom_escape(s):
     return str(s).replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
 
 
-def build_prometheus_text(url, results, cert):
+# Minimum samples before a nearest-rank percentile is distinguishable from the
+# max: below these, p90/p95/p99 ARE the max sample (same floors as --stats).
+PERCENTILE_FLOORS = {50: 2, 90: 10, 95: 20, 99: 100}
+
+
+def build_prometheus_text(url, results, cert, counters=None):
     """Build an OpenMetrics/text-exposition string from one probe cycle:
     check_endpoint_up, the last successful run's per-phase *_seconds gauges,
     aggregate total-time percentiles (when -c > 1), response code/bytes, and
@@ -2127,28 +2202,54 @@ def build_prometheus_text(url, results, cert):
     labels = f'url="{_prom_escape(url)}",host="{_prom_escape(host)}"'
     ok = [r for r in results if not r["failed"]]
     last = ok[-1] if ok else None
+    most_recent = results[-1] if results else None
     out = []
 
-    def emit(name, help_text, value):
+    def emit(name, help_text, value, mtype="gauge", extra_labels=""):
         out.append(f"# HELP {name} {help_text}")
-        out.append(f"# TYPE {name} gauge")
-        out.append(f"{name}{{{labels}}} {value}")
+        out.append(f"# TYPE {name} {mtype}")
+        lbl = labels + (f",{extra_labels}" if extra_labels else "")
+        out.append(f"{name}{{{lbl}}} {value}")
 
+    # Previously "up" was 1 whenever ANY probe in the scrape succeeded, which
+    # contradicted its own help text when the last of several probes failed.
+    up = 1 if most_recent is not None and not most_recent["failed"] else 0
+    emit("check_endpoint_up", "1 if the most recent probe succeeded, else 0", up)
+    if not up and most_recent is not None:
+        reason = (most_recent.get("marker") or "<ERR>").strip("<>").lower()
+        emit(
+            "check_endpoint_last_error",
+            "1 with the failure reason of the most recent probe, when it failed",
+            1,
+            extra_labels=f'reason="{_prom_escape(reason)}"',
+        )
+
+    # Per-scrape counts are gauges. The *_total names are reserved by
+    # Prometheus naming rules for counters, so they are now real counters,
+    # cumulative over the exporter's lifetime - use them with rate().
     emit(
-        "check_endpoint_up",
-        "1 if the most recent probe succeeded, else 0",
-        1 if last else 0,
-    )
-    emit(
-        "check_endpoint_requests_total",
+        "check_endpoint_scrape_probes",
         "Number of probes performed this scrape",
         len(results),
     )
     emit(
-        "check_endpoint_failures_total",
+        "check_endpoint_scrape_probe_failures",
         "Number of failed probes this scrape",
         len(results) - len(ok),
     )
+    if counters is not None:
+        emit(
+            "check_endpoint_requests_total",
+            "Probes performed since the exporter started",
+            counters["requests"],
+            mtype="counter",
+        )
+        emit(
+            "check_endpoint_failures_total",
+            "Failed probes since the exporter started",
+            counters["failures"],
+            mtype="counter",
+        )
     # Without this, a -k exporter reports a healthy endpoint indistinguishably
     # from a verified one, and check_endpoint_tls_expiry_days below describes a
     # certificate that was never validated. Alert on it being 1 if you don't
@@ -2213,7 +2314,17 @@ def build_prometheus_text(url, results, cert):
         r["phases"]["total"] for r in ok if r["phases"].get("total") is not None
     )
     if len(totals) >= 2:
+        emit(
+            "check_endpoint_total_seconds_samples",
+            "Successful probes the total_seconds percentiles are computed from",
+            len(totals),
+        )
+        # A p99 of 3 samples is just the max; publishing it under a p99 name
+        # makes dashboards show a "tail" that is a single observation. Each
+        # percentile appears only once there are enough samples (see -c).
         for p in (50, 90, 95, 99):
+            if len(totals) < PERCENTILE_FLOORS[p]:
+                continue
             emit(
                 f"check_endpoint_total_seconds_p{p}",
                 f"p{p} of total request time across this scrape's runs (seconds)",
@@ -2238,9 +2349,16 @@ class _MetricsHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         try:
             results, cert = self.server.probe_fn()
-            body = build_prometheus_text(self.server.probe_url, results, cert).encode(
-                "utf-8"
-            )
+            # Scrapes can run concurrently (ThreadingHTTPServer), so the
+            # lifetime counters are updated and snapshotted under a lock.
+            with self.server.counter_lock:
+                counters = self.server.counters
+                counters["requests"] += len(results)
+                counters["failures"] += sum(1 for r in results if r["failed"])
+                snapshot = dict(counters)
+            body = build_prometheus_text(
+                self.server.probe_url, results, cert, counters=snapshot
+            ).encode("utf-8")
             status = 200
         except Exception as exc:  # never let a scrape crash the server
             body = f"# probe error: {exc}\n".encode()
@@ -2273,6 +2391,8 @@ def serve_prometheus(bind, port, url, probe_fn):
     httpd.daemon_threads = True
     httpd.probe_fn = probe_fn
     httpd.probe_url = url
+    httpd.counters = {"requests": 0, "failures": 0}
+    httpd.counter_lock = threading.Lock()
     shown = bind or "0.0.0.0"
     sys.stderr.write(
         f"check-endpoint: Prometheus exporter on http://{shown}:{port}/  "
@@ -3666,6 +3786,13 @@ NOTE ON -p/-P (IP pinning)
     # ── output / analysis ──────────────────────────────────────────────
     out_group = parser.add_argument_group("output and analysis")
     out_group.add_argument(
+        "--no-color",
+        dest="no_color",
+        action="store_true",
+        help="disable colored output (also off when stdout is not a terminal "
+        "or the NO_COLOR environment variable is set)",
+    )
+    out_group.add_argument(
         "--show-cookies",
         dest="show_cookies",
         action="store_true",
@@ -3868,6 +3995,10 @@ NOTE ON -p/-P (IP pinning)
     )
 
     args = parser.parse_args()
+
+    global USE_COLOR
+    if args.no_color:
+        USE_COLOR = False
 
     if args.stream:
         FIELDS.extend(STREAM_FIELDS)
@@ -4197,6 +4328,11 @@ NOTE ON -p/-P (IP pinning)
     # Strict exit code: any single breaching run fails the whole invocation.
     if assert_cfg is not None and any(r["_assert_fails"] for r in results):
         sys.exit(1)
+    # A request that got no HTTP response at all (DNS, connect, TLS, timeout,
+    # ...) is not "all good" either, even with no assertions set. Exiting 0
+    # here made `check-endpoint URL && deploy` carry on against a dead host.
+    if any(r["failed"] for r in results):
+        sys.exit(3)
 
 
 if __name__ == "__main__":

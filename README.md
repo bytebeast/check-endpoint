@@ -1,7 +1,7 @@
 # check-endpoint.py
 
 <p align="center">
-  <img alt="Version" src="https://img.shields.io/badge/Version-2.10.0-89b4fa?style=flat">
+  <img alt="Version" src="https://img.shields.io/badge/Version-3.0.0-89b4fa?style=flat">
   <img alt="Status" src="https://img.shields.io/badge/Status-beta-f9e2af?style=flat">
   <a href="https://github.com/bytebeast/check-endpoint/blob/main/LICENSE"><img alt="License" src="https://img.shields.io/badge/License-MIT-a6e3a1?style=flat"></a>
   <a href="https://www.python.org/downloads/"><img alt="Python" src="https://img.shields.io/badge/Python-3.9+-cba6f7?style=flat"></a>
@@ -760,8 +760,10 @@ keeps verification on, unlike `-k`.
 
 ### Running from cron or a systemd timer
 
-Colors auto-disable when output isn't a TTY, so nothing extra is needed there.
-Assertion exit codes (`--assert-status`, `--max-*`) pass through normally. Give
+Colors auto-disable when output isn't a TTY (or `NO_COLOR` is set, or
+`--no-color` is passed), so nothing extra is needed there. Exit codes pass
+through normally: `1` for a breached assertion, `3` for a request that failed
+outright. Give
 the unit an absolute path to the venv's Python rather than relying on `PATH`.
 
 ---
@@ -971,6 +973,7 @@ kubectl run check-endpoint --rm -it --restart=Never \
 | `--show-cookies`                                | After the run, print every cookie sent or received (name, value, domain/path, flags, expiry) across all `-c N` runs                                                                                   |
 | `--http2`                                       | Request HTTP/2 via ALPN (HTTPS); falls back to HTTP/1.1 if unsupported                                                                                                                                |
 | `--http2-prior-knowledge`                       | Send HTTP/2 over cleartext `http://` (h2c); only when the server is known to speak it                                                                                                                 |
+| `--no-color`                                    | Disable colors (they are already off when output is not a terminal or `NO_COLOR` is set)
 | `--stats`                                       | Print a percentile summary (min/p50/p90/p95/p99/max/mean/stdev) per phase; needs `-c 2` or more. With `-S`, adds a `STREAM GAPS` footer over inter-chunk gaps, which works from `-c 1`                 |
 | `--assert-status CODE`                          | Fail (exit 1) if the HTTP status is not `CODE`                                                                                                                                                        |
 | `--max-total DUR`                               | Fail if `TOTAL_TIME` exceeds `DUR` (`500ms`, `1s`, `1.5s`)                                                                                                                                            |
@@ -1081,7 +1084,9 @@ pipelines and cron-driven monitoring.
 - `--expect-body STR` matches a literal substring; `--expect-regex RE` matches a
   regular expression (both validate the response body)
 
-Exit codes: `0` all good, `1` an assertion breached, `2` bad arguments.
+Exit codes: `0` all good, `1` an assertion breached, `2` bad arguments, `3` a
+request got no HTTP response (DNS, connect, TLS, timeout, ...) and no assertion
+was set. Before 3.0.0 that last case exited `0`.
 
 ```bash
 ./check-endpoint.py --assert-status 200 --max-ttfb 300ms --max-total 1s \
@@ -1436,7 +1441,9 @@ curl localhost:9109/metrics
 ```
 
 Each scrape runs `-c` probes (default 1), so `-c > 1` also exposes per-scrape
-total-time percentiles. Exposed series include `check_endpoint_up`, the
+total-time percentiles (each one only once there are enough samples: p90 needs
+`-c 10`, p95 `-c 20`, p99 `-c 100`; below that they would just repeat the max).
+Exposed series include `check_endpoint_up` (the most recent probe), the
 per-phase `*_seconds` gauges, `check_endpoint_http_response_code`,
 `check_endpoint_response_bytes`, (over HTTPS) `check_endpoint_tls_expiry_days`,
 and `check_endpoint_tls_verification_disabled`.
