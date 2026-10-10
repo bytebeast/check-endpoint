@@ -48,9 +48,21 @@ Every scrape runs `-c` probes (default 1) and exposes:
 | `check_endpoint_body_download_seconds`                            | gauge | Body download time                                  |
 | `check_endpoint_total_seconds`                                    | gauge | Total request time                                  |
 | `check_endpoint_response_bytes`                                   | gauge | Response body size                                  |
-| `check_endpoint_total_seconds_p50/p90/p95/p99`                    | gauge | Per-scrape percentiles (only when `-c` > 1)         |
+| `check_endpoint_total_seconds_samples`                            | gauge | Successful probes the percentiles are computed from |
+| `check_endpoint_total_seconds_p50/p90/p95/p99`                    | gauge | Per-scrape percentiles, each only once there are enough samples: p50 from 2, p90 from 10, p95 from 20, p99 from 100 (set with `-c`) |
 | `check_endpoint_tls_expiry_days`                                  | gauge | Days until the TLS certificate expires (HTTPS only) |
-| `check_endpoint_requests_total` / `check_endpoint_failures_total` | gauge | Probes run / failed this scrape                     |
+| `check_endpoint_last_error{reason="..."}`                         | gauge | `1` with the failure reason (`conn-fail`, `tls-fail`, `to`, ...) when the most recent probe failed; absent otherwise |
+| `check_endpoint_scrape_probes` / `check_endpoint_scrape_probe_failures` | gauge | Probes run / failed this scrape          |
+| `check_endpoint_requests_total` / `check_endpoint_failures_total` | counter | Probes run / failed since the exporter started; use with `rate()` |
+
+> **Changed in 3.0.0:** `check_endpoint_requests_total` and
+> `check_endpoint_failures_total` used to be per-scrape gauges, which broke
+> Prometheus naming rules (`_total` is reserved for counters; `promtool check
+> metrics` rejected them). They are now true counters, and the per-scrape
+> values moved to `check_endpoint_scrape_probes` and
+> `check_endpoint_scrape_probe_failures`. `check_endpoint_up` now follows the
+> most recent probe, as documented; before, it stayed `1` if any probe in the
+> scrape succeeded.
 
 All series are labeled `url` and `host`. The server answers metrics on **any**
 path; `/metrics` is used by convention.
@@ -160,6 +172,13 @@ groups:
         labels: { severity: critical }
         annotations:
           summary: "{{ $labels.url }} is failing probes"
+
+      - alert: EndpointFailureRate
+        expr: rate(check_endpoint_failures_total[10m]) / rate(check_endpoint_requests_total[10m]) > 0.1
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $labels.url }} failing over 10% of probes"
 
       - alert: EndpointSlowTTFB
         expr: check_endpoint_first_byte_seconds > 1
