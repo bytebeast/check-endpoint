@@ -13,6 +13,10 @@
   <a href="https://github.com/bytebeast/check-endpoint/actions/workflows/image.yml"><img alt="image" src="https://github.com/bytebeast/check-endpoint/actions/workflows/image.yml/badge.svg"></a>
 </p>
 
+<p align="center">
+  <a href="https://bytebeast.github.io/check-endpoint/"><b>bytebeast.github.io/check-endpoint</b></a> · see it run live
+</p>
+
 > I originally wrote this script after discovering that curl can independently
 > measure each phase of an HTTP connection. I've since vibe-coded it into
 > something considerably more complete and robust.
