@@ -1,5 +1,14 @@
 # Changelog
 
+## v3.0.1 (2026-11-14)
+
+### Bug Fixes
+
+- **check-endpoint**: fix probe bugs and correct reuse docs
+- **exporter**: use /healthz for probes and point at real image
+
+<!-- also in this release: build, ci -->
+
 ## v3.0.0 (2026-10-10)
 
 ### Breaking changes
