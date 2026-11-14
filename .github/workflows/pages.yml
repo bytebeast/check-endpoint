@@ -1,0 +1,52 @@
+# .github/workflows/pages.yml
+#
+# Publishes site/ to https://bytebeast.github.io/check-endpoint/
+#
+# ONE-TIME SETUP: Settings > Pages > Build and deployment > Source must be set
+# to "GitHub Actions", otherwise deploy-pages fails with a 404.
+
+name: pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "site/**"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: pages
+  # Never cancel a deployment partway; let the newer one queue behind it.
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Upload site
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - uses: actions/upload-pages-artifact@v4
+        with:
+          path: site
+
+  deploy:
+    name: Deploy to GitHub Pages
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
