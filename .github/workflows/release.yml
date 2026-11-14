@@ -43,6 +43,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      # To dispatch image.yml for the new tag; see the last step.
+      actions: write
     steps:
       # persist-credentials stays on: this job pushes a tag.
       - uses: actions/checkout@v4 # zizmor: ignore[artipacked]
@@ -65,6 +67,7 @@ jobs:
       # WITHOUT a matching CHANGELOG heading did not come from this pipeline
       # and must not be tagged.
       - name: Tag if the committed version has none
+        id: tag
         run: |
           version=$(sed -n 's/^APP_VERSION *= *"\(.*\)"/\1/p' check-endpoint.py)
           if [ -z "$version" ]; then
@@ -96,7 +99,39 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git tag -a "$tag" -m "$tag"
           git push origin "$tag"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "created $tag" >> "$GITHUB_STEP_SUMMARY"
+
+      # A tag pushed with GITHUB_TOKEN does not trigger other workflows, so
+      # image.yml's `push: tags` never fires for it and the release image
+      # (1.2.3, 1.2, 1, latest) was never built. workflow_dispatch is the one
+      # event GITHUB_TOKEN is allowed to start, and dispatching on the tag ref
+      # gives image.yml the same GITHUB_REF a tag push would.
+      - name: Build the release image
+        if: steps.tag.outputs.tag != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          gh workflow run image.yml --ref "$TAG"
+          echo "dispatched image.yml for \`$TAG\`" >> "$GITHUB_STEP_SUMMARY"
+
+      # Notes are this version's CHANGELOG section, which the gate above has
+      # already confirmed exists.
+      - name: Create the GitHub Release
+        if: steps.tag.outputs.tag != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          awk -v h="## $TAG" '
+            index($0, h) == 1 && substr($0, length(h) + 1, 1) !~ /[0-9]/ { on = 1; next }
+            on && /^## / { exit }
+            on { print }
+          ' CHANGELOG.md > "$RUNNER_TEMP/notes.md"
+          gh release create "$TAG" --verify-tag --title "$TAG" \
+            --notes-file "$RUNNER_TEMP/notes.md"
+          echo "released \`$TAG\`" >> "$GITHUB_STEP_SUMMARY"
 
   # ── open the next release PR ──────────────────────────────────────────────
   prepare:

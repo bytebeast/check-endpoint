@@ -1,13 +1,16 @@
 # .github/workflows/image.yml
 #
-# Builds the CLI image and publishes it to GitHub Container Registry.
+# Builds the CLI and exporter images and publishes them to GitHub Container
+# Registry. Release builds are dispatched by release.yml's tag job, because a
+# tag pushed with GITHUB_TOKEN does not trigger `push: tags` below.
 #
 # Unlike createPullRequest (see release.yml), pushing packages is NOT blocked
 # for GITHUB_TOKEN - `packages: write` is all that's needed, no App token.
 #
-# FIRST PUSH ONLY: the package is created private. Make it public at
+# FIRST PUSH ONLY: each package is created private. Make them public at
 #   https://github.com/users/bytebeast/packages/container/check-endpoint/settings
-# otherwise every cluster pulling it needs an imagePullSecret.
+#   https://github.com/users/bytebeast/packages/container/check-endpoint-exporter/settings
+# otherwise every cluster pulling them needs an imagePullSecret.
 
 name: image
 
@@ -19,6 +22,8 @@ on:
     paths:
       - "check-endpoint.py"
       - "contrib/check-endpoint-cli/**"
+      - "contrib/check-endpoint-exporter/Dockerfile"
+      - ".dockerignore"
       - ".github/workflows/image.yml"
   workflow_dispatch:
 
@@ -31,8 +36,16 @@ concurrency:
 
 jobs:
   build:
-    name: Build and push
+    name: Build and push (${{ matrix.image }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: check-endpoint
+            dockerfile: contrib/check-endpoint-cli/Dockerfile
+          - image: check-endpoint-exporter
+            dockerfile: contrib/check-endpoint-exporter/Dockerfile
     permissions:
       contents: read
       packages: write
@@ -93,7 +106,7 @@ jobs:
       - uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
         id: meta
         with:
-          images: ghcr.io/${{ github.repository_owner }}/check-endpoint
+          images: ghcr.io/${{ github.repository_owner }}/${{ matrix.image }}
           flavor: latest=auto
           tags: |
             type=semver,pattern={{version}}
@@ -110,16 +123,12 @@ jobs:
       - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: .
-          file: contrib/check-endpoint-cli/Dockerfile
+          file: ${{ matrix.dockerfile }}
           platforms: linux/amd64,linux/arm64
           # Build on PRs to catch breakage, but only publish from main and tags.
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-          # Surfaces as org.opencontainers.image.version on the image, so
-          # `docker inspect` answers "which release is this?" without
-          # reading the tag.
-          build-args: |
-            APP_VERSION=${{ steps.meta.outputs.version }}
+          # One cache scope per image, or the two builds evict each other.
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}
