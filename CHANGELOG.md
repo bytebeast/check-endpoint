@@ -1,5 +1,11 @@
 # Changelog
 
+## v3.1.0 (2026-11-14)
+
+### Features
+
+- **site**: add project landing page and Pages deploy
+
 ## v3.0.1 (2026-11-14)
 
 ### Bug Fixes
