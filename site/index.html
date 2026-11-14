@@ -1,0 +1,438 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>check-endpoint · live, per-phase HTTP timing</title>
+<meta name="description" content="A live, per-phase HTTP timing probe. curl -w on steroids: every phase prints the moment it lands, so a hung request stalls exactly where it's stuck.">
+<meta property="og:title" content="check-endpoint">
+<meta property="og:description" content="A live, per-phase HTTP timing probe. Know exactly where the time goes.">
+<meta property="og:image" content="https://raw.githubusercontent.com/bytebeast/check-endpoint/main/images/check-endpoint-social-preview.png">
+<meta name="theme-color" content="#11111b">
+<style>
+  /* Catppuccin Mocha, the same palette the CLI uses */
+  :root {
+    --crust: #11111b; --mantle: #181825; --base: #1e1e2e;
+    --surface0: #313244; --surface1: #45475a; --overlay0: #6c7086;
+    --subtext0: #a6adc8; --text: #cdd6f4;
+    --blue: #89b4fa; --lavender: #b4befe; --sky: #89dceb; --teal: #94e2d5;
+    --green: #a6e3a1; --yellow: #f9e2af; --peach: #fab387; --red: #f38ba8;
+    --mauve: #cba6f7; --maroon: #eba0ac;
+    --mono: ui-monospace, "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
+    --sans: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    --wrap: min(100vw - 32px, 1240px);
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html { scroll-behavior: smooth; }
+  body {
+    background: var(--crust);
+    color: var(--text);
+    font: 16px/1.6 var(--sans);
+    -webkit-font-smoothing: antialiased;
+    overflow-x: hidden;
+  }
+  body::before {
+    content: ""; position: fixed; inset: 0; z-index: -1; pointer-events: none;
+    background:
+      radial-gradient(900px 500px at 15% -10%, rgb(137 180 250 / .13), transparent 70%),
+      radial-gradient(800px 500px at 90% 0%, rgb(203 166 247 / .11), transparent 70%),
+      linear-gradient(rgb(205 214 244 / .025) 1px, transparent 1px) 0 0 / 40px 40px,
+      linear-gradient(90deg, rgb(205 214 244 / .025) 1px, transparent 1px) 0 0 / 40px 40px;
+  }
+  a { color: inherit; text-decoration: none; }
+  code { font-family: var(--mono); }
+  .wrap { width: var(--wrap); margin: 0 auto; }
+
+  nav { display: flex; align-items: center; justify-content: space-between; padding: 22px 0; }
+  .logo { font: 600 15px var(--mono); display: flex; align-items: center; gap: 10px; }
+  .logo i { width: 10px; height: 10px; border-radius: 50%; background: var(--green); box-shadow: 0 0 12px var(--green); }
+  nav ul { display: flex; gap: 28px; list-style: none; font-size: 14px; color: var(--subtext0); }
+  nav ul a:hover { color: var(--text); }
+
+  header { text-align: center; padding: 64px 0 48px; }
+  .pill {
+    display: inline-flex; gap: 10px; padding: 6px 14px; border-radius: 999px;
+    border: 1px solid var(--surface0); background: rgb(24 24 37 / .7);
+    font: 12px var(--mono); color: var(--subtext0);
+  }
+  .pill b { color: var(--blue); font-weight: 500; }
+  h1 {
+    font-size: clamp(38px, 6.4vw, 76px); line-height: 1.04; letter-spacing: -.035em;
+    font-weight: 750; margin: 26px 0 22px;
+  }
+  h1 span {
+    background: linear-gradient(90deg, var(--sky), var(--blue) 40%, var(--mauve));
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+  }
+  .lede { max-width: 640px; margin: 0 auto; color: var(--subtext0); font-size: clamp(16px, 1.6vw, 19px); }
+  .lede code { color: var(--text); }
+  .cta { display: flex; flex-wrap: wrap; gap: 12px; justify-content: center; margin-top: 34px; }
+  .btn {
+    display: inline-flex; align-items: center; gap: 8px; padding: 12px 20px; border-radius: 10px;
+    font-size: 15px; font-weight: 600; transition: transform .15s, background .15s, border-color .15s;
+  }
+  .btn:hover { transform: translateY(-1px); }
+  .btn.primary { background: var(--blue); color: var(--crust); }
+  .btn.primary:hover { background: var(--lavender); }
+  .btn.ghost { border: 1px solid var(--surface1); color: var(--text); }
+  .btn.ghost:hover { border-color: var(--overlay0); }
+
+  /* Terminal */
+  .term {
+    margin: 56px auto 0; border-radius: 14px; overflow: hidden; text-align: left;
+    background: var(--mantle); border: 1px solid var(--surface0);
+    box-shadow: 0 40px 120px -30px rgb(137 180 250 / .25), 0 20px 50px -20px rgb(0 0 0 / .8);
+  }
+  .bar {
+    display: flex; align-items: center; gap: 8px; padding: 12px 16px;
+    background: var(--crust); border-bottom: 1px solid var(--surface0);
+  }
+  .bar i { width: 12px; height: 12px; border-radius: 50%; }
+  .bar i:nth-child(1) { background: var(--red); }
+  .bar i:nth-child(2) { background: var(--yellow); }
+  .bar i:nth-child(3) { background: var(--green); }
+  .bar span { flex: 1; text-align: center; font: 12px var(--mono); color: var(--overlay0); }
+  .bar button {
+    font: 12px var(--mono); color: var(--subtext0); background: none; cursor: pointer;
+    border: 1px solid var(--surface0); border-radius: 6px; padding: 3px 10px;
+  }
+  .bar button:hover { color: var(--text); border-color: var(--surface1); }
+  #screen {
+    /* The table is ~156 columns wide; scale the font so it fits the window
+       on desktop, and scroll sideways instead of wrapping on small screens. */
+    font: clamp(10px, calc((var(--wrap) - 44px) / 95), 13.5px)/1.6 var(--mono);
+    padding: 18px 20px 22px; height: calc(32 * 1.6em + 40px);
+    overflow-x: auto; overflow-y: hidden; white-space: pre; color: var(--text);
+  }
+  .cursor { display: inline-block; width: .6em; height: 1.15em; vertical-align: text-bottom; background: var(--text); animation: blink 1s steps(1) infinite; }
+  @keyframes blink { 50% { opacity: 0; } }
+  .hd { color: var(--blue); font-weight: 700; }
+  .dim { color: var(--overlay0); }
+  .sub { color: var(--subtext0); }
+  .lav { color: var(--lavender); }
+  .sky { color: var(--sky); } .teal { color: var(--teal); } .yel { color: var(--yellow); }
+  .pch { color: var(--peach); } .pchb { color: var(--peach); font-weight: 700; }
+  .grn { color: var(--green); } .mve { color: var(--mauve); } .red { color: var(--red); }
+  .str { color: var(--green); } .flag { color: var(--sky); }
+
+  section { padding: 110px 0 0; }
+  .eyebrow { font: 12px var(--mono); color: var(--mauve); letter-spacing: .12em; text-transform: uppercase; }
+  h2 { font-size: clamp(28px, 3.6vw, 42px); letter-spacing: -.025em; line-height: 1.15; margin: 10px 0 12px; }
+  .intro { color: var(--subtext0); max-width: 620px; margin-bottom: 44px; }
+
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(290px, 1fr)); gap: 14px; }
+  .card {
+    position: relative; padding: 22px 22px 20px; border-radius: 12px;
+    background: linear-gradient(180deg, rgb(30 30 46 / .9), rgb(24 24 37 / .9));
+    border: 1px solid var(--surface0); transition: border-color .2s, transform .2s;
+  }
+  .card:hover { border-color: var(--surface1); transform: translateY(-2px); }
+  .card h3 { font-size: 16px; font-weight: 650; margin-bottom: 6px; }
+  .card p { font-size: 14px; color: var(--subtext0); line-height: 1.55; }
+  .card > code {
+    display: inline-block; margin-bottom: 14px; padding: 2px 8px; border-radius: 6px;
+    font-size: 12px; background: var(--crust); border: 1px solid var(--surface0);
+  }
+  .card p code { font-size: 13px; color: var(--text); }
+  .card:nth-child(6n+1) > code { color: var(--blue); }
+  .card:nth-child(6n+2) > code { color: var(--teal); }
+  .card:nth-child(6n+3) > code { color: var(--mauve); }
+  .card:nth-child(6n+4) > code { color: var(--peach); }
+  .card:nth-child(6n+5) > code { color: var(--green); }
+  .card:nth-child(6n+6) > code { color: var(--sky); }
+
+  .runs { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 14px; }
+  .run { border-radius: 12px; border: 1px solid var(--surface0); background: var(--mantle); overflow: hidden; }
+  .run h3 {
+    display: flex; justify-content: space-between; align-items: center;
+    font: 600 13px var(--mono); padding: 12px 16px; border-bottom: 1px solid var(--surface0); color: var(--subtext0);
+  }
+  .run h3 button {
+    font: 11px var(--mono); color: var(--overlay0); background: none; border: 0; cursor: pointer;
+  }
+  .run h3 button:hover { color: var(--text); }
+  .run pre { font: 13px/1.7 var(--mono); padding: 16px; overflow-x: auto; }
+  .run .c { color: var(--overlay0); }
+
+  footer {
+    margin-top: 120px; padding: 34px 0 48px; border-top: 1px solid var(--surface0);
+    display: flex; flex-wrap: wrap; gap: 12px; justify-content: space-between;
+    font-size: 14px; color: var(--overlay0);
+  }
+  footer a:hover { color: var(--text); }
+
+  @media (max-width: 640px) {
+    nav ul { gap: 18px; }
+    nav ul li:first-child { display: none; }
+    header { padding-top: 36px; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    html { scroll-behavior: auto; }
+    .cursor { animation: none; }
+    .btn, .card { transition: none; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <nav>
+    <a class="logo" href="#"><i></i>check-endpoint</a>
+    <ul>
+      <li><a href="#features">Features</a></li>
+      <li><a href="#install">Install</a></li>
+      <li><a href="https://github.com/bytebeast/check-endpoint">GitHub</a></li>
+    </ul>
+  </nav>
+
+  <header>
+    <div class="pill"><b>v3.0.0</b> · MIT · Python 3.9+ · pycurl</div>
+    <h1>Know exactly where<br><span>the time goes.</span></h1>
+    <p class="lede">A live, per-phase HTTP timing probe. Like <code>curl -w</code> on steroids: every phase prints the moment it lands, so a hung request stalls right where it's stuck.</p>
+    <div class="cta">
+      <a class="btn primary" href="#install">Get started</a>
+      <a class="btn ghost" href="https://github.com/bytebeast/check-endpoint">View on GitHub</a>
+    </div>
+
+    <div class="term" aria-label="Animated demo of check-endpoint probing an API ten times with an auth header, a JSON body, and --stats">
+      <div class="bar"><i></i><i></i><i></i><span>~/check-endpoint</span><button id="replay" type="button">replay</button></div>
+      <div id="screen" aria-hidden="true"></div>
+    </div>
+  </header>
+
+  <section id="features">
+    <div class="eyebrow">Features</div>
+    <h2>Everything <code>curl -w</code> wishes it did.</h2>
+    <p class="intro">Client-side, per-phase evidence for the endpoints you don't control. When the owner says "looks fine on our end", point at the column that isn't.</p>
+    <div class="grid">
+      <div class="card"><code>live</code><h3>Live streaming output</h3><p>Each phase prints as it completes. A hang stalls visibly at the phase that's stuck.</p></div>
+      <div class="card"><code>deltas</code><h3>Per-phase deltas</h3><p>Every column is that phase alone, not a running total. Only TOTAL_TIME accumulates.</p></div>
+      <div class="card"><code>--stats</code><h3>Percentile summary</h3><p>min, p50 through p99, max, mean and stdev per phase across <code>-c N</code> runs. Tail latency, not averages.</p></div>
+      <div class="card"><code>--assert-status --max-ttfb</code><h3>CI and cron ready</h3><p>Exits non-zero when a status or phase budget is breached. Drops straight into pipelines.</p></div>
+      <div class="card"><code>--expect-body --expect-regex</code><h3>Body validation</h3><p>Fail when the body is wrong, not just the status code. Catches soft-error 200s.</p></div>
+      <div class="card"><code>&lt;DNS-FAIL&gt; &lt;TLS-FAIL&gt; &lt;TO&gt;</code><h3>Failure markers</h3><p>Printed in exactly the column that broke, so you see where it failed, not just that it did.</p></div>
+      <div class="card"><code>auto</code><h3>Self-explaining TLS failures</h3><p>Verify reason plus the offending certificate, read off the connection that failed. No re-run.</p></div>
+      <div class="card"><code>--tls-info</code><h3>Certificate inspection</h3><p>Issuer, SANs and days until expiry, colored as the deadline gets close.</p></div>
+      <div class="card"><code>-S</code><h3>Streaming and SSE</h3><p>Times every chunk as it arrives. CHUNKS, AVG_GAP and MAX_GAP show stalls mid-stream.</p></div>
+      <div class="card"><code>-S --stats</code><h3>Gap percentiles (ITL)</h3><p>Distribution over every inter-chunk gap. Meaningful at <code>-c 1</code>, and it spots proxy batching.</p></div>
+      <div class="card"><code>-P / -p IP</code><h3>IP pinning</h3><p>Hold every run on one backend instead of measuring a different one per DNS round-robin.</p></div>
+      <div class="card"><code>--server-hints</code><h3>Per-request provenance</h3><p>Which server, edge, CDN or backend answered each request, flagged constant or varied.</p></div>
+      <div class="card"><code>--show-headers --capture-header</code><h3>Header capture</h3><p>Cache HIT/MISS verdict, plus any response header you name, tracked per request.</p></div>
+      <div class="card"><code>REDIRECT</code><h3>Redirect accounting</h3><p>Hop count and time in their own column, so TOTAL_TIME always adds up.</p></div>
+      <div class="card"><code>--http2</code><h3>HTTP/2</h3><p>The PROTO column shows what was actually negotiated: h1, h1.0, h2 or h3.</p></div>
+      <div class="card"><code>-b -j --show-cookies</code><h3>Cookies and sessions</h3><p>Cookies persist across every run in an invocation. Test login flows and session affinity.</p></div>
+      <div class="card"><code>--capture-on failed</code><h3>Output capture</h3><p>Full responses written to disk for the runs that matter, without moving the timings.</p></div>
+      <div class="card"><code>-H -d -X -4 -6</code><h3>curl-compatible flags</h3><p>Auth headers, POST bodies, methods, IP family. Your muscle memory already works.</p></div>
+      <div class="card"><code>--prometheus</code><h3>Prometheus exporter</h3><p>Re-probes on every scrape. Helm chart and ServiceMonitor included.</p></div>
+      <div class="card"><code>ghcr.io</code><h3>Runs as a container</h3><p>Probe from a pod, CI job or bastion inside the network you're debugging. No pycurl build.</p></div>
+      <div class="card"><code>catppuccin</code><h3>Color that means something</h3><p>Cool blues for fast, warm peach and red for slow. Auto-off when piped.</p></div>
+    </div>
+  </section>
+
+  <section id="install">
+    <div class="eyebrow">Install</div>
+    <h2>Run it anywhere.</h2>
+    <p class="intro">A single Python script on top of pycurl. Or skip the build and use the image.</p>
+    <div class="runs">
+      <div class="run"><h3>local<button type="button">copy</button></h3><pre><span class="c"># pycurl must match libcurl's TLS backend</span>
+python3 -m venv ~/.venvs/check-endpoint
+source ~/.venvs/check-endpoint/bin/activate
+PYCURL_SSL_LIBRARY=openssl pip install pycurl
+./check-endpoint.py -c 10 --stats https://example.com</pre></div>
+      <div class="run"><h3>docker<button type="button">copy</button></h3><pre><span class="c"># nothing to install beyond Docker</span>
+docker run --rm -it \
+  ghcr.io/bytebeast/check-endpoint:3.0.0 \
+  -c 10 --stats https://example.com</pre></div>
+      <div class="run"><h3>kubernetes<button type="button">copy</button></h3><pre><span class="c"># probe from inside the cluster</span>
+kubectl run check-endpoint --rm -it --restart=Never \
+  --image=ghcr.io/bytebeast/check-endpoint:3.0.0 \
+  -- --tls-info https://my-svc.my-ns.svc.cluster.local/health</pre></div>
+    </div>
+  </section>
+
+  <footer>
+    <span>check-endpoint · MIT licensed · by bytebeast</span>
+    <span><a href="https://github.com/bytebeast/check-endpoint#readme">Docs</a> · <a href="https://github.com/bytebeast/check-endpoint/issues">Issues</a> · <a href="https://github.com/bytebeast/check-endpoint/blob/main/CHANGELOG.md">Changelog</a></span>
+  </footer>
+</div>
+
+<script>
+(() => {
+  const screen = document.getElementById("screen");
+  const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  // Sample data, not a real capture. Two backends in rotation, the second a
+  // little slower to answer, and one cold-cache outlier on run 7.
+  const RUNS = [
+    // ip,             dns,  tcp,  tls,  pre, ttfb,  dl   (ms)
+    ["203.0.113.24", 24.3, 18.2, 36.8, 0.4,  142, 0.6],
+    ["203.0.113.31",  1.8, 19.4, 38.1, 0.3,  211, 0.5],
+    ["203.0.113.24",  1.2, 17.6, 35.2, 0.3,  138, 0.4],
+    ["203.0.113.31",  1.4, 21.1, 39.7, 0.4,  204, 0.6],
+    ["203.0.113.24",  1.1, 18.9, 36.2, 0.3,  147, 0.5],
+    ["203.0.113.31",  1.4, 20.2, 37.4, 0.3,  226, 0.5],
+    ["203.0.113.24",  1.3, 18.1, 34.9, 0.4, 1184, 0.7],
+    ["203.0.113.31",  1.6, 19.8, 38.8, 0.3,  198, 0.4],
+    ["203.0.113.24",  1.2, 17.9, 35.4, 0.3,  151, 0.5],
+    ["203.0.113.31",  1.7, 22.4, 40.2, 0.4,  219, 0.6],
+  ];
+  const BYTES = 312, CODE = "201", PROTO = "h2";
+
+  // Column widths copied from the real header row.
+  const COLS = [["#", 4], ["IP_ADDRESS", 16], ["DNS", 12], ["TCP_CONNECT", 13],
+    ["TLS_HANDSHAKE", 15], ["PRE-TRANSFER", 14], ["1ST_BYTE", 12], ["REDIRECT", 13],
+    ["BODY_DL", 12], ["TOTAL_TIME", 12], ["HTTP_CODE", 11], ["TOTAL_BYTES", 13], ["PROTO", 7]];
+
+  const CMD = [
+    [["$ ", "grn"], ["./check-endpoint.py ", ""], ["-c ", "flag"], ["10 ", ""], ["--stats", "flag"], [" \\", "dim"]],
+    [["    -H ", "flag"], ['"Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.demo"', "str"], [" \\", "dim"]],
+    [["    -H ", "flag"], ['"Content-Type: application/json"', "str"], [" \\", "dim"]],
+    [["    -d ", "flag"], [`'{"order_id":"A-1042","sku":"BB-7","qty":3}'`, "str"], [" \\", "dim"]],
+    [["    https://api.example.com/v1/orders", ""]],
+  ];
+
+  // Same formatting rules as human_time() / human_bytes() in check-endpoint.py.
+  const fmtTime = ms => ms < 1 ? "<1ms" : ms < 1000 ? `${Math.round(ms)}ms` : `${(ms / 1000).toFixed(2)}s`;
+  const fmtBytes = n => n < 1024 ? `${Math.round(n)}B` : `${(n / 1024).toFixed(1)}KB`;
+
+  // Same color rules as _colorize_time() / _colorize_bytes().
+  function timeSpans(v) {
+    if (v === "<1ms") return [[v, "dim"]];
+    if (v.endsWith("ms")) {
+      const n = parseFloat(v), [a, b] = n < 10 ? ["sky", "teal"] : n < 100 ? ["teal", "sky"] : ["yel", "pch"];
+      return [[v.slice(0, -2), a], ["ms", b]];
+    }
+    return [[v.slice(0, -1), "pchb"], ["s", "yel"]];
+  }
+  const bytesSpans = v => [[v, v.endsWith("KB") ? "yel" : "grn"]];
+
+  let line, timer = 0, run = 0;
+  const cursor = document.createElement("span");
+  cursor.className = "cursor";
+
+  function newLine() {
+    line = document.createElement("div");
+    screen.appendChild(line);
+    line.appendChild(cursor);
+  }
+  function put(text, cls) {
+    const s = document.createElement("span");
+    if (cls) s.className = cls;
+    s.textContent = text;
+    line.insertBefore(s, cursor);
+  }
+  function cell(spans, width) {
+    const plain = spans.map(s => s[0]).join("");
+    spans.forEach(([t, c]) => put(t, c));
+    put(" ".repeat(Math.max(width - plain.length, 0)));
+  }
+  function rightCell(text, spans, width) {
+    put(" ".repeat(Math.max(width - text.length, 0)));
+    spans.forEach(([t, c]) => put(t, c));
+  }
+
+  // A tiny scheduler so a replay can cancel everything queued by the last run.
+  const sleep = ms => new Promise((res, rej) => {
+    const id = run;
+    setTimeout(() => (id === run ? res() : rej()), reduced ? 0 : ms);
+  });
+
+  async function typeCommand() {
+    for (const [i, parts] of CMD.entries()) {
+      if (i) newLine();
+      for (const [text, cls] of parts) {
+        if (cls === "grn" || reduced) { put(text, cls); continue; }
+        for (const ch of text) { put(ch, cls); await sleep(7 + Math.random() * 14); }
+      }
+      await sleep(120);
+    }
+  }
+
+  async function row(i, [ip, dns, tcp, tls, pre, ttfb, dl]) {
+    const w = COLS.map(c => c[1]);
+    const rowCls = i % 2 ? "sub" : "";
+    const wait = ms => sleep(Math.min(Math.max(ms, 45), 1400));
+    newLine();
+    cell([[String(i + 1), "dim"]], w[0]);
+    await wait(dns);
+    cell([[ip, "lav"]], w[1]);
+    cell(timeSpans(fmtTime(dns)), w[2]);
+    await wait(tcp);
+    cell(timeSpans(fmtTime(tcp)), w[3]);
+    await wait(tls);
+    cell(timeSpans(fmtTime(tls)), w[4]);
+    await wait(pre);
+    cell(timeSpans(fmtTime(pre)), w[5]);
+    await wait(ttfb);
+    cell(timeSpans(fmtTime(ttfb)), w[6]);
+    cell([["n/a", "dim"]], w[7]);
+    await wait(dl);
+    cell(timeSpans(fmtTime(dl)), w[8]);
+    cell(timeSpans(fmtTime(dns + tcp + tls + pre + ttfb + dl)), w[9]);
+    cell([[CODE, "grn"]], w[10]);
+    cell(bytesSpans(fmtBytes(BYTES)), w[11]);
+    cell([[PROTO, rowCls]], w[12]);
+  }
+
+  // Nearest-rank percentile and population stdev, as in _stat_values().
+  function stats(vals) {
+    const s = [...vals].sort((a, b) => a - b), n = s.length;
+    const pct = p => s[Math.max(0, Math.min(Math.ceil(p / 100 * n) - 1, n - 1))];
+    const mean = s.reduce((a, b) => a + b, 0) / n;
+    const sd = Math.sqrt(s.reduce((a, b) => a + (b - mean) ** 2, 0) / n);
+    return [s[0], pct(50), pct(90), pct(95), pct(99), s[n - 1], mean, sd];
+  }
+
+  async function summary() {
+    const LABELS = ["DNS", "TCP_CONNECT", "TLS_HANDSHAKE", "PRE-TRANSFER", "1ST_BYTE", "BODY_DL", "TOTAL_TIME"];
+    newLine();
+    newLine(); put(`SUMMARY  (${RUNS.length} ok, 0 failed)`, "hd");
+    newLine(); put("PHASE".padEnd(14) + ["min", "p50", "p90", "p95", "p99", "max", "mean", "stdev"].map(c => c.padStart(9)).join(""), "hd");
+    for (const [k, label] of LABELS.entries()) {
+      await sleep(70);
+      const col = k < 6 ? RUNS.map(r => r[k + 1]) : RUNS.map(r => r.slice(1).reduce((a, b) => a + b, 0));
+      newLine(); put(label.padEnd(14), "sub");
+      stats(col).forEach(v => { const t = fmtTime(v); rightCell(t, timeSpans(t), 9); });
+    }
+    await sleep(70);
+    newLine(); put("TOTAL_BYTES".padEnd(14), "sub");
+    stats(RUNS.map(() => BYTES)).forEach(v => { const t = fmtBytes(v); rightCell(t, bytesSpans(t), 9); });
+  }
+
+  async function play() {
+    run++;
+    clearTimeout(timer);
+    screen.textContent = "";
+    newLine();
+    try {
+      await sleep(500);
+      await typeCommand();
+      await sleep(350);
+      newLine();
+      COLS.forEach(([name, width]) => put(name.padEnd(width), "hd"));
+      for (const [i, r] of RUNS.entries()) await row(i, r);
+      await summary();
+      newLine();
+      newLine(); put("$ ", "grn");
+      if (!reduced) timer = setTimeout(play, 7000);
+    } catch { /* superseded by a replay */ }
+  }
+
+  document.getElementById("replay").addEventListener("click", play);
+
+  // Start when the terminal scrolls into view, so the run isn't half over.
+  new IntersectionObserver((entries, obs) => {
+    if (entries[0].isIntersecting) { obs.disconnect(); play(); }
+  }, { threshold: 0.3 }).observe(screen);
+
+  document.querySelectorAll(".run button").forEach(b => b.addEventListener("click", () => {
+    const text = [...b.closest(".run").querySelector("pre").childNodes]
+      .filter(n => !(n.classList && n.classList.contains("c"))).map(n => n.textContent).join("").trim();
+    navigator.clipboard.writeText(text).then(() => {
+      b.textContent = "copied";
+      setTimeout(() => (b.textContent = "copy"), 1500);
+    });
+  }));
+})();
+</script>
+</body>
+</html>
