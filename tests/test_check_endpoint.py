@@ -224,6 +224,21 @@ def test_exit_1_when_an_assertion_breaches(servers):
     assert run_cli(servers["refused"], "--assert-status", "200").returncode == 1
 
 
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["-k", "--cacert", "x.pem"],
+        ["--cacert", "does-not-exist.pem"],
+        ["-c", "0"],
+        ["-t", "0"],
+        ["-d", "@does-not-exist.json"],
+    ],
+)
+def test_exit_2_on_bad_arguments(args):
+    # 1 means "an assertion breached"; CI must not confuse a typo with that.
+    assert run_cli(*args, "http://127.0.0.1:9/").returncode == 2
+
+
 # ------------------------------------------------------------------ color
 
 
@@ -266,6 +281,62 @@ def test_color_on_a_terminal_and_off_with_flag_or_env(servers):
     assert "\x1b[" in _tty_run(servers["ok"])
     assert "\x1b[" not in _tty_run(servers["ok"], "--no-color")
     assert "\x1b[" not in _tty_run(servers["ok"], env={"NO_COLOR": "1"})
+
+
+def test_sub_millisecond_is_dim_not_error(monkeypatch):
+    monkeypatch.setattr(ce, "USE_COLOR", True)
+    assert not ce._colorize_time("<1ms").startswith(ce.C_ERROR)
+    assert not ce._colorize_time_padded("<1ms", "<1ms   ").startswith(ce.C_ERROR)
+    assert ce._colorize_time("<TO>").startswith(ce.C_ERROR)
+
+
+# ---------------------------------------------------------------- capture
+
+
+def test_capture_no_body_never_writes_the_body(tmp_path):
+    # --expect-body buffers the body for the assertion; --capture-no-body must
+    # still keep it out of the file.
+    from datetime import datetime
+
+    w = ce.CaptureWriter(
+        "all",
+        str(tmp_path),
+        "http://x/",
+        ["x"],
+        datetime.now().astimezone(),
+        want_body=False,
+    )
+    w.open()
+    res = {
+        "run": 1,
+        "failed": False,
+        "phases": {},
+        "headers": {},
+        "body": b"SECRET-BODY",
+        "bytes": 11,
+    }
+    w.write_run(res)
+    out = (Path(w.dir) / "1.out").read_bytes()
+    assert b"SECRET-BODY" not in out
+    assert b"[response-body] (not captured)" in out
+
+
+# ------------------------------------------------------------- ip column
+
+
+def test_ip_is_the_address_curl_connected_to(servers):
+    # The up-front lookup fails for this name, but curl still connects via
+    # RESOLVE. The recorded IP must be the one curl used, not the guess.
+    port = int(servers["ok"].rsplit(":", 1)[1].strip("/"))
+    res = ce.run_once(
+        1,
+        f"http://ce-test.invalid:{port}/",
+        2,
+        resolve=[f"ce-test.invalid:{port}:127.0.0.1"],
+        quiet=True,
+    )
+    assert not res["failed"]
+    assert res["ip"] == "127.0.0.1"
 
 
 # ------------------------------------------------------------ prometheus
@@ -337,15 +408,13 @@ def test_percentiles_need_enough_samples(n, expected):
     assert got == expected
 
 
-def test_exporter_counters_accumulate_across_scrapes(servers):
-    import urllib.request
-
+def _start_exporter(url):
     port = _free_port()
     p = subprocess.Popen(
         [
             sys.executable,
             str(SCRIPT),
-            servers["refused"],
+            url,
             "-t",
             "2",
             "--prometheus",
@@ -357,13 +426,37 @@ def test_exporter_counters_accumulate_across_scrapes(servers):
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
+    for _ in range(100):
+        try:
+            socket.create_connection(("127.0.0.1", port), 0.2).close()
+            break
+        except OSError:
+            time.sleep(0.05)
+    return p, port
+
+
+def test_healthz_answers_without_probing(servers):
+    import urllib.request
+
+    p, port = _start_exporter(servers["refused"])
     try:
-        for _ in range(100):
-            try:
-                socket.create_connection(("127.0.0.1", port), 0.2).close()
-                break
-            except OSError:
-                time.sleep(0.05)
+        r = urllib.request.urlopen(f"http://127.0.0.1:{port}/healthz", timeout=5)
+        assert r.status == 200
+        assert r.read() == b"ok\n"
+        url = f"http://127.0.0.1:{port}/metrics"
+        text = urllib.request.urlopen(url, timeout=30).read().decode()
+    finally:
+        p.terminate()
+        p.wait()
+    # /healthz ran no probe, so only the /metrics scrape is counted.
+    assert _metrics(text)["check_endpoint_requests_total"][1] == "1"
+
+
+def test_exporter_counters_accumulate_across_scrapes(servers):
+    import urllib.request
+
+    p, port = _start_exporter(servers["refused"])
+    try:
         url = f"http://127.0.0.1:{port}/metrics"
         urllib.request.urlopen(url, timeout=30).read()
         text = urllib.request.urlopen(url, timeout=30).read().decode()

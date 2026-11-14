@@ -206,12 +206,13 @@ def _colorize_time(value: str) -> str:
     if not USE_COLOR or not value:
         return value
 
+    # Before the error-marker check: "<1ms" also starts with "<".
+    if value == "<1ms":
+        return _col(_OVERLAY0) + value + RESET
+
     # Error markers travel through here too sometimes
     if value.startswith("<"):
         return C_ERROR + value + RESET
-
-    if value == "<1ms":
-        return _col(_OVERLAY0) + value + RESET
 
     # Minutes: "1m30s" (guard against "ms" values, which also contain "m")
     if "m" in value and value[0].isdigit() and not value.endswith("ms"):
@@ -563,11 +564,11 @@ def _colorize_time_padded(value: str, padded: str) -> str:
     if not USE_COLOR or not value:
         return padded
 
-    if value.startswith("<"):
-        return C_ERROR + padded + RESET
-
     if value == "<1ms":
         return _col(_OVERLAY0) + padded + RESET
+
+    if value.startswith("<"):
+        return C_ERROR + padded + RESET
 
     if "m" in value and value[0].isdigit() and not value.endswith("ms"):
         return _col(BOLD + _RED) + padded + RESET
@@ -1138,9 +1139,14 @@ def run_once(
         except pycurl.error:
             pass
 
+    # The IP printed up front came from our own lookup, not curl's. Round-robin
+    # DNS can hand curl a different first answer, and curl moves on to the next
+    # address when one refuses, so record the address curl actually used.
+    connected_ip = _connected_ip(curl)
+
     res = {
         "run": run_num,
-        "ip": ip_display,
+        "ip": connected_ip or ip_display,
         "failed": failed,
         "errno": fail_errno,
         "errmsg": fail_errmsg,
@@ -1222,6 +1228,7 @@ def run_once(
                         write_cell(res["marker"], field_width(key), color=_col(C_ERROR))
                     else:
                         write_empty_cell(key, field_width(key))
+            write_ip_note(ip_display, connected_ip)
             sys.stdout.write(_col(RESET) + "\n")
             sys.stdout.flush()
         curl.close()
@@ -1311,6 +1318,7 @@ def run_once(
                 stream_stats[key] if key in stream_stats else get_final_value(curl, key)
             )
             _write_final_cell(key, value, field_width(key), rcol)
+        write_ip_note(ip_display, connected_ip)
         sys.stdout.write(_col(RESET) + "\n")
         sys.stdout.flush()
 
@@ -1348,6 +1356,23 @@ def url_host_port(url):
     return hostname, port
 
 
+def _connected_ip(curl):
+    """The address curl last connected (or tried to connect) to, or None."""
+    try:
+        return curl.getinfo(pycurl.PRIMARY_IP) or None
+    except pycurl.error:
+        return None
+
+
+def write_ip_note(printed_ip, connected_ip):
+    """Append the real address to the row when it differs from IP_ADDRESS.
+
+    IP_ADDRESS has to be printed before curl connects (see LIVE_FIELD_KEYS),
+    so it is a separate lookup and can be wrong; this is the correction."""
+    if connected_ip and connected_ip != printed_ip:
+        sys.stdout.write(_col(C_LINENUM) + f"(connected: {connected_ip})" + _col(RESET))
+
+
 def resolve_ip(hostname, port, ip_version):
     """
     One-shot forward lookup used to populate the IP ADDRESS column up
@@ -1367,7 +1392,7 @@ def build_pin_resolve(url, pin_value, ip_version):
     hostname, port = url_host_port(url)
     if hostname is None:
         sys.stderr.write(f"error: could not parse a hostname out of: {url}\n")
-        sys.exit(1)
+        sys.exit(2)
 
     if pin_value == "auto":
         family = socket.AF_INET6 if ip_version == "6" else socket.AF_INET
@@ -1375,7 +1400,8 @@ def build_pin_resolve(url, pin_value, ip_version):
             infos = socket.getaddrinfo(hostname, port, family, socket.SOCK_STREAM)
         except socket.gaierror as exc:
             sys.stderr.write(f"error: could not resolve {hostname}: {exc}\n")
-            sys.exit(1)
+            # Same outcome as a <DNS-FAIL> row: the request could not happen.
+            sys.exit(3)
         ip = infos[0][4][0]
     else:
         ip = pin_value
@@ -2342,11 +2368,23 @@ def build_prometheus_text(url, results, cert, counters=None):
 
 
 class _MetricsHandler(BaseHTTPRequestHandler):
-    """Runs a fresh probe cycle on every GET (any path) and returns metrics."""
+    """Runs a fresh probe cycle on every GET (any path but /healthz) and
+    returns metrics."""
 
     protocol_version = "HTTP/1.1"
 
     def do_GET(self):
+        # Liveness/readiness checks must not probe the target: that multiplied
+        # traffic to it, inflated the *_total counters, and let a slow target
+        # fail the exporter's own health check and restart it.
+        if self.path.split("?", 1)[0] == "/healthz":
+            body = b"ok\n"
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         try:
             results, cert = self.server.probe_fn()
             # Scrapes can run concurrently (ThreadingHTTPServer), so the
@@ -2790,7 +2828,9 @@ class CaptureWriter:
                 if k != "_status_line":
                     out.append(f"{k}: {v}")
 
-        body = res.get("body")
+        # The body may be buffered for --expect-body even with
+        # --capture-no-body; the flag still has to keep it off disk.
+        body = res.get("body") if self.want_body else None
         out.append("")
         if body is None:
             out.append("[response-body] (not captured)")
@@ -2814,7 +2854,7 @@ class CaptureWriter:
         byte-identical to what came off the wire - binary payloads, odd
         encodings and mojibake all survive for later inspection."""
         body = res.get("body")
-        if not body:
+        if not body or not self.want_body:
             return
         fh.write(body[: self.body_limit])
         if not body.endswith(b"\n"):
@@ -2864,7 +2904,11 @@ def main():
         epilog=f"""\
 FIELDS REPORTED (in column order)
   #              request counter (1-based) across -c N runs
-  IP_ADDRESS     resolved IP of the remote host
+  IP_ADDRESS     resolved IP of the remote host. Printed before curl
+                 connects, so it comes from a separate lookup; if curl ends
+                 up connected to a different address (round-robin DNS, or a
+                 refused address it skipped), the row ends with
+                 "(connected: IP)" and that address is the one measured
   DNS            time spent on DNS lookup (that phase only)
   TCP_CONNECT    time spent on the TCP handshake (that phase only)
   TLS_HANDSHAKE  time spent on the TLS handshake (blank for plain http://)
@@ -3028,11 +3072,11 @@ WHAT IT CAN FIND
   CHUNKS/AVG_GAP/MAX_GAP        Streaming responses (-S)
 
   [#] Run count, warm-up & outliers
-    - Warm-up on run 1: the first request pays for cold DNS, a fresh TCP
-      handshake, and a full TLS negotiation; runs 2+ reuse all three.
-      Compare run 1 against the rest before concluding anything is slow.
-      If runs 2+ don't drop, that itself is the finding (see DNS,
-      TCP_CONNECT, and TLS_HANDSHAKE below)
+    - Every run is a cold request: its own DNS lookup, a new TCP
+      connection and a full TLS handshake. Nothing is reused between
+      runs, so rows are directly comparable. DNS can still drop after
+      run 1, but that is the operating system's resolver cache, not this
+      tool (see DNS below)
     - Outlier requests: a single request dramatically slower than the rest
       reveals cold cache misses, JVM garbage collection pauses, or lock
       contention
@@ -3065,10 +3109,10 @@ WHAT IT CAN FIND
     - Missing local DNS cache: DNS stays high every request instead of
       dropping to ~0ms after the first lookup
     - Short TTLs: DNS spikes when the record expires mid-test
-    - libcurl's own cache hides the real cost: runs 2+ normally show ~0ms
-      because libcurl caches within the process, not because your
-      resolver is fast. Use -F to force a fresh lookup every run and
-      measure the true cost
+    - A local resolver cache hides the real cost: runs 2+ can show ~0ms
+      because the OS (mDNSResponder, systemd-resolved, nscd) cached the
+      answer, not because your resolver is fast. Run 1 is the honest
+      number
     - Deep CNAME chains: a hostname pointing through several CNAMEs
       before the final A/AAAA record costs extra round-trips, showing as
       consistently elevated DNS even on a healthy resolver
@@ -3081,19 +3125,17 @@ WHAT IT CAN FIND
       queue capacity under load
     - Firewall / filtering: <CONN-FAIL> on specific ports or from
       specific network paths
-    - Connection reuse not happening: TCP should collapse to ~0ms from
-      run 2 onwards. If it stays high on every run without -F, something
-      is closing the connection each time: Connection: close, a proxy,
-      or a load-balancer idle timeout
+    - Every run opens a new connection, so TCP_CONNECT is a real
+      handshake on every row, not just the first
     - Packet loss: an occasional TCP time several times the median, with
       the rest steady, suggests a lost SYN being retransmitted
     - A proxy shortens what you're measuring: with a proxy in the path
       this column is the time to the proxy, not to the origin
 
   [TLS_HANDSHAKE] TLS & security
-    - Missing session resumption: TLS time stays high on every repeat
-      request instead of dropping after the first; compare run 1 vs
-      run 2+
+    - Every run does a full handshake: TLS sessions are not resumed
+      between runs, so this column does not show whether the server
+      supports resumption
     - Slow OCSP validation or long cert chains: consistently elevated TLS
       time even without load
     - TLS 1.2 vs 1.3: 1.3 completes in one round-trip and 1.2 needs two,
@@ -3167,9 +3209,9 @@ WHAT IT CAN FIND
       -H "Accept-Encoding: gzip" to measure what a browser actually
       experiences; BODY_DL and TOTAL_BYTES should both drop sharply, and
       if they don't, compression isn't configured, which is the finding
-    - TCP slow-start on large bodies: the first response over a fresh
-      connection transfers more slowly than later ones; compare run 1
-      against runs 2+ before blaming the server
+    - TCP slow-start on large bodies: every run uses a fresh connection,
+      so every large body pays for slow-start; a long BODY_DL on a big
+      response is partly the client ramping up, not only the server
 
   [TOTAL_TIME] End-to-end budget
     - The only cumulative column: every other timing column is that
@@ -3211,10 +3253,6 @@ WHAT IT CAN FIND
     - Verify HTTP/2 is actually active: --http2 with the PROTO column
       confirms whether the server is serving h2 or falling back to h1.
       Useful to verify CDN or load balancer HTTP/2 configuration
-    - Connection reuse visible in timing: on repeated -c N runs with
-      --http2, TCP_CONNECT and TLS_HANDSHAKE drop to <1ms from run 2
-      onwards, confirming the persistent connection is being reused, one
-      of HTTP/2's main performance benefits
     - Detect HTTP/2 connection issues: if PROTO shows h1 despite --http2,
       the server or an intermediate proxy is downgrading the connection
     - Values you may see: h1 (HTTP/1.1), h1.0 (HTTP/1.0), h2 (HTTP/2), h3
@@ -3343,8 +3381,9 @@ HTTP/2 SUPPORT
     "h2" if it supports HTTP/2 or "http/1.1" to fall back. The PROTO column
     shows which version was actually used.
 
-    Without --http2, libcurl defaults to HTTP/1.1 even if the server supports
-    HTTP/2. Use --http2 explicitly to verify whether a server speaks HTTP/2.
+    libcurl 7.62 and later already negotiates HTTP/2 over HTTPS by default
+    when built with nghttp2, so PROTO often shows h2 without this flag.
+    --http2 makes the request explicit and fails fast if nghttp2 is missing.
 
     Requires libcurl built with nghttp2. Check with: curl --version | grep HTTP2
 
@@ -3355,13 +3394,9 @@ HTTP/2 SUPPORT
     Most public web servers reject this; use --http2 for HTTPS instead.
 
   HTTP/2 and the timing columns
-    HTTP/2 multiplexes requests over a single persistent connection.
-    On repeated -c N runs:
-    - Run 1: full DNS + TCP + TLS handshake
-    - Run 2+: TCP CONNECT and TLS HANDSHAKE drop to <1ms (connection reused)
-    This connection reuse is one of HTTP/2's main performance benefits.
-    Use -F (force-dns) to get fresh connections and see the full handshake
-    on every run rather than the reuse shortcut.
+    Each run opens its own connection, so every row shows the full DNS +
+    TCP + TLS cost even over HTTP/2. HTTP/2's connection reuse and
+    multiplexing are not visible across runs here.
 
 ANALYSIS, CHECKS, AND EXPORT
   --stats
@@ -3386,11 +3421,14 @@ ANALYSIS, CHECKS, AND EXPORT
                              ceilings on those individual phases
       --expect-body STR      body must contain the substring STR
       --expect-regex RE      body must match the regex RE
-    Exit codes: 0 = all good, 1 = an assertion breached, 2 = bad arguments.
+    Exit codes: 0 = all good, 1 = an assertion breached, 2 = bad arguments,
+    3 = a request got no HTTP response (DNS, connect, TLS, timeout, ...)
+    and no assertion was set.
 
   --tls-info
     After the run, print the server certificate's subject, issuer, expiry
-    date with days remaining (yellow under 30 days, red under 15), and
+    date with days remaining (yellow under 30 days, orange under 15, red
+    once expired), and
     Subject Alternative Names.
 
     Not needed to diagnose a failure: when a run ends in <TLS-FAIL> this
@@ -3416,7 +3454,7 @@ ANALYSIS, CHECKS, AND EXPORT
       varied       a few distinct values  (the real which-backend signal,
                    e.g. x-cache = HIT×6 / MISS×4, or two x-amz-cf-pop codes)
       per-request  a different value each run (request/trace ids like cf-ray)
-    Combine with -c N (and optionally -F to avoid connection reuse) to reveal
+    Combine with -c N (every run opens a new connection) to reveal
     load-balancer rotation and CDN PoP selection.
 
   --capture-header NAME   (repeatable)
@@ -3485,7 +3523,9 @@ ANALYSIS, CHECKS, AND EXPORT
     Run as a Prometheus exporter daemon instead of printing the table:
     serve metrics over HTTP (default port 9109, all interfaces) and re-probe
     the URL on every scrape, so Prometheus always pulls fresh numbers. Any
-    GET path returns the metrics; the process blocks until Ctrl+C. Each
+    GET path returns the metrics, except /healthz, which answers 200 without
+    probing (point liveness/readiness checks there, or they probe the target
+    too). The process blocks until Ctrl+C. Each
     scrape runs -c probes, so -c > 1 also exposes per-scrape total-time
     percentiles. Reports check_endpoint_up, per-phase *_seconds gauges for
     the last successful probe, response code and bytes, and (over HTTPS)
@@ -3520,9 +3560,6 @@ EXAMPLES
   Force a specific method, e.g. PUT with no body:
       ./check-endpoint.py -X PUT https://example.com/api/resource/1
 
-  Force a fresh DNS lookup + connection on every request (no reuse/caching):
-      ./check-endpoint.py -c 10 -F https://example.com
-
   Pin all repeats to the IP first resolved (avoid round-robin drift):
       ./check-endpoint.py -c 10 -P https://example.com
 
@@ -3554,8 +3591,8 @@ EXAMPLES
   Track a specific header per request (repeatable), e.g. a backend id:
       ./check-endpoint.py -c 10 --capture-header x-backend --capture-header x-pod https://example.com
 
-  Force fresh connections so every run can land on a different backend:
-      ./check-endpoint.py -c 10 -F --server-hints https://example.com
+  Every run opens a new connection, so each one can land on a different backend:
+      ./check-endpoint.py -c 10 --server-hints https://example.com
 
   Run a Prometheus exporter that re-probes on every scrape:
       ./check-endpoint.py --prometheus --prometheus-port 9109 https://example.com
@@ -3704,7 +3741,8 @@ NOTE ON -p/-P (IP pinning)
         "-F",
         "--force-dns",
         action="store_true",
-        help="force a fresh DNS lookup on every request",
+        help="re-resolve DNS and open a new connection on every redirect hop. "
+        "Separate runs never share either, so this only matters for redirects",
     )
     parser.add_argument(
         "-p",
@@ -3995,6 +4033,11 @@ NOTE ON -p/-P (IP pinning)
     )
 
     args = parser.parse_args()
+    if args.count < 1:
+        parser.error("-c/--count must be at least 1")
+    # libcurl reads a timeout of 0 as "no timeout at all".
+    if args.timeout <= 0:
+        parser.error("-t/--timeout must be greater than 0")
 
     global USE_COLOR
     if args.no_color:
@@ -4012,7 +4055,11 @@ NOTE ON -p/-P (IP pinning)
         if args.user_agent_alias
         else DEFAULT_USER_AGENT
     )
-    data = resolve_data_arg(args.data) if args.data is not None else None
+    try:
+        data = resolve_data_arg(args.data) if args.data is not None else None
+    except OSError as exc:
+        sys.stderr.write(f"error: cannot read -d file: {exc}\n")
+        sys.exit(2)
 
     cookie_literal, cookie_file = resolve_cookie_arg(args.cookie)
     cookies_active = bool(
@@ -4050,10 +4097,10 @@ NOTE ON -p/-P (IP pinning)
             "  -k disables verification entirely, so a CA bundle is unused.\n"
             "  Drop -k to verify against --cacert, or drop --cacert to skip verification.\n"
         )
-        sys.exit(1)
+        sys.exit(2)
     if args.cacert and not os.path.isfile(args.cacert):
         sys.stderr.write(f"error: --cacert file not found: {args.cacert}\n")
-        sys.exit(1)
+        sys.exit(2)
     if args.insecure:
         # stderr, so it stays out of piped table output but is impossible to
         # miss interactively. This tool's output gets handed to other people as
@@ -4081,14 +4128,14 @@ NOTE ON -p/-P (IP pinning)
                 "  sudo apt install libcurl4-openssl-dev libnghttp2-dev\n"
                 "  pip uninstall pycurl && pip install --no-cache-dir pycurl\n"
             )
-            sys.exit(1)
+            sys.exit(2)
         http_version = pycurl.CURL_HTTP_VERSION_2TLS
     elif getattr(args, "http2_prior_knowledge", False):
         if not _HAS_HTTP2:
             sys.stderr.write(
                 "error: --http2-prior-knowledge requires libcurl built with nghttp2. See --http2 error for fix.\n"
             )
-            sys.exit(1)
+            sys.exit(2)
         http_version = pycurl.CURL_HTTP_VERSION_2_PRIOR_KNOWLEDGE
 
     # Build assertion config (only active if any assertion flag was set).

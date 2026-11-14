@@ -1,0 +1,6 @@
+# Both images are built with the repository root as context (image.yml,
+# docker-compose.yml) and COPY only the script. Docker reads .dockerignore
+# from the context root, so the ones under contrib/ only apply when building
+# from those directories.
+*
+!check-endpoint.py

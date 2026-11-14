@@ -5,15 +5,17 @@ target:
 probe:
   # requests per scrape; >1 also exposes per-scrape total-time percentiles
   count: 1
-  # per-request timeout in seconds (-t)
-  timeout: 10
+  # per-request timeout in seconds (-t). Keep count * timeout under
+  # serviceMonitor.scrapeTimeout, or a hung target times out the whole scrape
+  # and check_endpoint_last_error never reaches Prometheus.
+  timeout: 8
   # any extra check-endpoint flags, e.g.:
   #   ["--http2"]
   #   ["-H", "Authorization: Bearer TOKEN"]
   #   ["-6"]                      # force IPv6
   extraArgs: []
 image:
-  repository: ghcr.io/OWNER/check-endpoint-exporter
+  repository: ghcr.io/bytebeast/check-endpoint-exporter
   # defaults to the chart appVersion when empty
   tag: ""
   pullPolicy: IfNotPresent
@@ -21,8 +23,9 @@ imagePullSecrets: []
 nameOverride: ""
 fullnameOverride: ""
 replicaCount: 1
-# The port/path the exporter listens on. The server answers on ANY path, but
-# /metrics is used by convention for ServiceMonitor and annotations.
+# The port/path the exporter listens on. Every path except /healthz runs a
+# probe; /metrics is used by convention for ServiceMonitor and annotations.
+# Kubernetes probes use /healthz so they never probe the target.
 exporter:
   port: 9109
   path: /metrics

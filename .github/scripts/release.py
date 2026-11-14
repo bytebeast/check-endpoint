@@ -68,6 +68,14 @@ VERSION_FILES = [
         "README.md",
         re.compile(r"Version-(?P<version>[0-9]+\.[0-9]+\.[0-9]+)-"),
     ),
+    (
+        "contrib/check-endpoint-exporter/helm/check-endpoint-exporter/Chart.yaml",
+        re.compile(r'(?m)^appVersion:\s*"(?P<version>[0-9]+\.[0-9]+\.[0-9]+)"'),
+    ),
+    (
+        "contrib/check-endpoint-exporter/kubernetes/deployment.yaml",
+        re.compile(r"check-endpoint-exporter:(?P<version>[0-9]+\.[0-9]+\.[0-9]+)"),
+    ),
 ]
 
 CHANGELOG = "CHANGELOG.md"

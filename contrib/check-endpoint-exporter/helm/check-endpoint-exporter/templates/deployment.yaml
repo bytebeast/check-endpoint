@@ -55,17 +55,23 @@ spec:
             - name: metrics
               containerPort: {{ .Values.exporter.port }}
               protocol: TCP
+          # /healthz, not the metrics path: any other path probes the target,
+          # so a slow target would fail these and restart the exporter.
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            periodSeconds: 2
+            failureThreshold: 15
           livenessProbe:
             httpGet:
-              path: {{ .Values.exporter.path }}
+              path: /healthz
               port: metrics
-            initialDelaySeconds: 5
             periodSeconds: 30
           readinessProbe:
             httpGet:
-              path: {{ .Values.exporter.path }}
+              path: /healthz
               port: metrics
-            initialDelaySeconds: 3
             periodSeconds: 15
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
