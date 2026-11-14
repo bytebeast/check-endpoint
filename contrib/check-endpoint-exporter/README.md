@@ -65,7 +65,9 @@ Every scrape runs `-c` probes (default 1) and exposes:
 > scrape succeeded.
 
 All series are labeled `url` and `host`. The server answers metrics on **any**
-path; `/metrics` is used by convention.
+path except `/healthz`; `/metrics` is used by convention. Every metrics request
+runs a probe, so point liveness and readiness checks at `/healthz`, which
+answers `200` without touching the target.
 
 ## Build the image
 
@@ -82,8 +84,9 @@ cd contrib/check-endpoint-exporter
 docker build -t check-endpoint-exporter:latest .
 ```
 
-Push it to your registry and note the reference (e.g.
-`ghcr.io/OWNER/check-endpoint-exporter:1.0.0`); you will use it below.
+Released images are published as `ghcr.io/bytebeast/check-endpoint-exporter`
+(`3.0.0`, `3.0`, `3`, `latest`), and the chart defaults to the release matching
+its `appVersion`, so you only need your own build for local changes.
 
 ## Run with Docker
 
@@ -105,8 +108,6 @@ first). Extra probe flags go after the URL-less options, e.g. add `--http2` or
 helm upgrade --install check-endpoint \
   contrib/check-endpoint-exporter/helm/check-endpoint-exporter \
   --namespace monitoring --create-namespace \
-  --set image.repository=ghcr.io/OWNER/check-endpoint-exporter \
-  --set image.tag=1.0.0 \
   --set target.url=https://example.com \
   --set serviceMonitor.enabled=true      # if you run the Prometheus Operator
 ```
@@ -117,9 +118,9 @@ Common values (see `values.yaml` for the full list):
 | --------------------------------- | -------------------------------- | ------------------------------------------- |
 | `target.url`                      | `https://example.com`            | Endpoint to probe (**set this**)            |
 | `probe.count`                     | `1`                              | Probes per scrape; `>1` adds percentiles    |
-| `probe.timeout`                   | `10`                             | Per-request timeout (seconds)               |
+| `probe.timeout`                   | `8`                              | Per-request timeout (seconds); keep `count` x `timeout` under `serviceMonitor.scrapeTimeout` |
 | `probe.extraArgs`                 | `[]`                             | Any extra flags, e.g. `{--http2}`           |
-| `image.repository` / `image.tag`  | `ghcr.io/OWNER/...` / appVersion | Image                                       |
+| `image.repository` / `image.tag`  | `ghcr.io/bytebeast/...` / appVersion | Image                                   |
 | `exporter.port` / `exporter.path` | `9109` / `/metrics`              | Listen port / scrape path                   |
 | `serviceMonitor.enabled`          | `false`                          | Create a Prometheus Operator ServiceMonitor |
 | `service.prometheusAnnotations`   | `false`                          | Add `prometheus.io/*` scrape annotations    |

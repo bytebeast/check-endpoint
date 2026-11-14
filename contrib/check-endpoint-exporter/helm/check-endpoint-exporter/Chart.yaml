@@ -5,8 +5,8 @@ description: >-
   (DNS, TCP, TLS, TTFB, download) on every scrape, backed by check-endpoint.py
   --prometheus.
 type: application
-version: 0.1.0
-appVersion: "1.0.0"
+version: 0.2.0
+appVersion: "3.0.0"
 keywords:
   - prometheus
   - exporter
@@ -16,6 +16,6 @@ keywords:
   - blackbox
   - sre
 sources:
-  - https://github.com/OWNER/REPO
+  - https://github.com/bytebeast/check-endpoint
 maintainers:
-  - name: OWNER
+  - name: bytebeast
