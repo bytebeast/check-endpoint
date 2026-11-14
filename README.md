@@ -187,11 +187,10 @@ are driven by flags rather than by a single field.
 
 ### `[#]` - Run count, warm-up & outliers
 
-- **Warm-up on run 1** - the first request pays for cold DNS, a fresh TCP
-  handshake, and a full TLS negotiation; runs 2+ reuse all three. Compare run 1
-  against the rest before concluding anything is slow. If runs 2+ _don't_ drop,
-  that itself is the finding (see the `DNS`, `TCP_CONNECT` and `TLS_HANDSHAKE`
-  sections)
+- **Every run is a cold request** - its own DNS lookup, a new TCP connection
+  and a full TLS handshake. Nothing is reused between runs, so rows are directly
+  comparable. DNS can still drop after run 1, but that is the operating system's
+  resolver cache, not this tool (see the `DNS` section)
 - **Outlier requests** - a single request dramatically slower than the rest
   reveals cold cache misses, JVM garbage collection pauses, or lock contention
 - **Intermittent timeouts** - one or two `<TO>` markers among otherwise
@@ -222,9 +221,9 @@ are driven by flags rather than by a single field.
 - **Missing local DNS cache** - DNS stays high every request instead of dropping
   to ~0ms after the first lookup
 - **Short TTLs** - DNS spikes when the record expires mid-test
-- **libcurl's own cache hides the real cost** - runs 2+ normally show ~0ms
-  because libcurl caches within the process, not because your resolver is fast.
-  Use `-F` to force a fresh lookup every run and measure the true cost
+- **A local resolver cache hides the real cost** - runs 2+ can show ~0ms
+  because the OS (mDNSResponder, systemd-resolved, nscd) cached the answer, not
+  because your resolver is fast. Run 1 is the honest number
 - **Deep CNAME chains** - a hostname pointing through several CNAMEs before the
   final A/AAAA record costs extra round-trips, showing as consistently elevated
   DNS even on a healthy resolver
@@ -238,10 +237,8 @@ are driven by flags rather than by a single field.
   capacity under load
 - **Firewall / filtering** - `<CONN-FAIL>` on specific ports or from specific
   network paths
-- **Connection reuse not happening** - TCP should collapse to ~0ms from run 2
-  onwards. If it stays high on every run without `-F`, something is closing the
-  connection each time: `Connection: close`, a proxy, or a load-balancer idle
-  timeout
+- **A real handshake on every row** - each run opens a new connection, so
+  `TCP_CONNECT` is measured every time, not just on run 1
 - **Packet loss** - an occasional TCP time several times the median, with the
   rest steady, suggests a lost SYN being retransmitted
 - **A proxy shortens what you're measuring** - with a proxy in the path this
@@ -249,8 +246,8 @@ are driven by flags rather than by a single field.
 
 ### `[TLS_HANDSHAKE]` - TLS & security
 
-- **Missing session resumption** - TLS time stays high on every repeat request
-  instead of dropping after the first; compare run 1 vs run 2+
+- **Every run does a full handshake** - TLS sessions are not resumed between
+  runs, so this column does not show whether the server supports resumption
 - **Slow OCSP validation or long cert chains** - consistently elevated TLS time
   even without load
 - **TLS 1.2 vs 1.3** - 1.3 completes in one round-trip and 1.2 needs two, so a
@@ -330,9 +327,9 @@ The most diagnostic column in the table.
   `-H "Accept-Encoding: gzip"` to measure what a browser actually experiences;
   `BODY_DL` and `TOTAL_BYTES` should both drop sharply, and if they don't,
   compression isn't configured, which is the finding
-- **TCP slow-start on large bodies** - the first response over a fresh
-  connection transfers more slowly than later ones; compare run 1 against runs
-  2+ before blaming the server
+- **TCP slow-start on large bodies** - every run uses a fresh connection, so
+  every large body pays for slow-start; a long `BODY_DL` on a big response is
+  partly the client ramping up, not only the server
 
 ### `[TOTAL_TIME]` - End-to-end budget
 
@@ -377,11 +374,9 @@ The most diagnostic column in the table.
 
 - **Verify HTTP/2 is actually active** - `--http2` with the `PROTO` column
   confirms whether the server is serving `h2` or falling back to `h1`. Useful to
-  verify CDN or load balancer HTTP/2 configuration
-- **Connection reuse visible in timing** - on repeated `-c N` runs with
-  `--http2`, TCP_CONNECT and TLS_HANDSHAKE drop to `<1ms` from run 2 onwards,
-  confirming the persistent connection is being reused, one of HTTP/2's main
-  performance benefits
+  verify CDN or load balancer HTTP/2 configuration. libcurl 7.62+ built with
+  nghttp2 already negotiates `h2` over HTTPS by default, so `PROTO` often shows
+  `h2` without the flag
 - **Detect HTTP/2 connection issues** - if `PROTO` shows `h1` despite `--http2`,
   the server or an intermediate proxy is downgrading the connection
 - **Values you may see** - `h1` (HTTP/1.1), `h1.0` (HTTP/1.0), `h2` (HTTP/2),
@@ -514,8 +509,8 @@ run, typically a trace or request id).
   what provides `curl-config`.
 - **A matching TLS backend** - see the warning below.
 - **libcurl built with nghttp2** - only needed for `--http2`. Check with
-  `curl --version | grep -i HTTP2`; without it, `--http2` simply falls back to
-  HTTP/1.1 (the tool prints how to rebuild if you ask for it).
+  `curl --version | grep -i HTTP2`; without it, `--http2` exits with code `2`
+  and prints how to rebuild.
 - **A CA certificate bundle** - present by default on most distributions, but
   absent from FreeBSD base and from minimal container images. Without one every
   `https://` target fails at the handshake. See
@@ -648,8 +643,7 @@ python3.12 -m venv ~/.venvs/check-endpoint
 ```
 
 **CentOS Linux 7:** end-of-life since June 2024. Its libcurl (7.29) predates
-HTTP/2, so `--http2` can only ever fall back to HTTP/1.1 and `PROTO` will never
-show `h2`. Its TLS stack also predates TLS 1.3, which makes `TLS_HANDSHAKE`
+HTTP/2, so `--http2` is refused and `PROTO` will never show `h2`. Its TLS stack also predates TLS 1.3, which makes `TLS_HANDSHAKE`
 timings unrepresentative of what a modern client sees. Run the probe from a
 container or a newer host instead - measuring through a stack that much older
 than your users' defeats the point.
@@ -843,9 +837,6 @@ exporter image instead; see
 # Force a specific method
 ./check-endpoint.py -X PUT https://example.com/api/resource/1
 
-# Force a fresh DNS lookup + new connection on every repeat
-./check-endpoint.py -c 10 -F https://example.com
-
 # Pin all repeats to the first resolved IP (avoids round-robin drift)
 ./check-endpoint.py -c 10 -P https://example.com
 
@@ -905,8 +896,8 @@ exporter image instead; see
 # Show the full multi-hop CDN chain (final hop only is the default)
 ./check-endpoint.py -c 10 --server-hints --full-cdn https://example.com
 
-# Force fresh connections so each run can land on a different backend
-./check-endpoint.py -c 10 -F --server-hints https://example.com
+# Every run opens a new connection, so each one can land on a different backend
+./check-endpoint.py -c 10 --server-hints https://example.com
 
 # Capture the full response of any run that fails an assertion
 ./check-endpoint.py -c 20 --assert-status 200 --capture-on failed https://example.com/health
@@ -962,7 +953,7 @@ kubectl run check-endpoint --rm -it --restart=Never \
 | `-H 'K: V'` / `--header`                        | Custom request header, repeatable                                                                                                                                                                     |
 | `-d DATA` / `--data`                            | Request body (POST); prefix with `@` to read from a file                                                                                                                                              |
 | `-X METHOD` / `--request`                       | Force an HTTP method (e.g. `PUT`, `DELETE`)                                                                                                                                                           |
-| `-F` / `--force-dns`                            | Disable libcurl's DNS cache and connection reuse                                                                                                                                                      |
+| `-F` / `--force-dns`                            | Re-resolve DNS and open a new connection on every redirect hop; separate runs never share either                                                                                                      |
 | `-P` / `--auto-pin`                             | Resolve once, then pin all repeats to that IP                                                                                                                                                         |
 | `-p IP` / `--pin-ip IP`                         | Pin all repeats to a specific IP address                                                                                                                                                              |
 | `-k` / `--insecure`                             | Skip TLS certificate verification (curl's `-k`). Timings stay accurate, but the whole `<TLS-FAIL>` family stops being reported - see the warning under [Failure Markers](#failure-markers)             |
@@ -1264,7 +1255,7 @@ headers as `key=value`), followed by a rollup that classifies each header:
 
 Add `--capture-header NAME` (repeatable, case-insensitive) to also track your
 own headers, for example a backend or pod id; a header that is absent shows `-`.
-Pair with `-c N`, and optionally `-F` to avoid connection reuse, to expose
+Pair with `-c N` (every run opens a new connection) to expose
 load-balancer rotation and CDN point-of-presence selection.
 
 Some CDN/cache headers are a comma-separated chain of hops (Fastly/Varnish
@@ -1472,7 +1463,7 @@ or scrape annotations) and example alert rules.
 | Column          | Description                                                                                                                                                                             |
 | --------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `#`             | Request number                                                                                                                                                                          |
-| `IP_ADDRESS`    | IP address libcurl connected to                                                                                                                                                         |
+| `IP_ADDRESS`    | IP from a lookup made before curl connects; if curl used another, the row ends with `(connected: IP)`                                                                                   |
 | `DNS`           | Duration of DNS lookup (phase only)                                                                                                                                                     |
 | `TCP_CONNECT`   | Duration of TCP handshake (phase only)                                                                                                                                                  |
 | `TLS_HANDSHAKE` | Duration of TLS negotiation; `n/a` for plain `http://`                                                                                                                                  |
