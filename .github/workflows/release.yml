@@ -138,14 +138,26 @@ jobs:
     name: Open release PR
     needs: tag
     runs-on: ubuntu-latest
+    # The push and the PR use the App token below, not GITHUB_TOKEN.
     permissions:
-      contents: write
-      pull-requests: write
+      contents: read
     steps:
+      # A branch pushed and a PR opened with GITHUB_TOKEN start every
+      # pull_request workflow as a zero-job failure, so release PRs never got
+      # real checks. Acting as a GitHub App makes them run normally.
+      - uses: actions/create-github-app-token@v3
+        id: app-token
+        with:
+          client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+
       # persist-credentials stays on: this job pushes the release branch.
       - uses: actions/checkout@v4 # zizmor: ignore[artipacked]
         with:
           fetch-depth: 0
+          token: ${{ steps.app-token.outputs.token }}
 
       - uses: actions/setup-python@v5
         with:
@@ -182,7 +194,7 @@ jobs:
       - name: Push the branch and open the PR
         if: steps.bump.outputs.release == 'true'
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           TAG: ${{ steps.bump.outputs.tag }}
           VERSION: ${{ steps.bump.outputs.version }}
           FILES: ${{ steps.bump.outputs.files }}
