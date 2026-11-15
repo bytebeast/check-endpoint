@@ -136,22 +136,32 @@ check-endpoint --tls-info https://external-api.example.com
 ### One-shot, no manifest
 
 ```bash
-kubectl run check-endpoint --rm -it --restart=Never \
+kubectl run check-endpoint --rm -it -q --restart=Never \
     --image=ghcr.io/bytebeast/check-endpoint:3 \
+    --command -- sh -c 'sleep 2; exec check-endpoint "$@"' \
     -- -c 10 --stats https://example.com
 ```
 
-Everything after `--` goes to the entrypoint, so it reads exactly like the local
-CLI.
+Everything after the final `--` goes to `check-endpoint`, so it reads exactly
+like the local CLI.
+
+The `sleep` is there because `kubectl run -it` only attaches once the pod
+reports Running, and the probe has started writing by then. Whatever row is
+half-written at the moment of attach loses its leading columns, so the table
+looks randomly shifted. Two seconds covers the attach on a typical cluster;
+raise it if a busy one still clips a row. `-q` keeps kubectl's own prompt
+messages from landing in the middle of the table. The debug pod above has no
+such race, since `kubectl exec` connects before the process starts.
 
 ### From a specific node
 
 Timing varies by where you land. To probe from a particular node:
 
 ```bash
-kubectl run check-endpoint --rm -it --restart=Never \
+kubectl run check-endpoint --rm -it -q --restart=Never \
     --image=ghcr.io/bytebeast/check-endpoint:3 \
     --overrides='{"spec":{"nodeName":"ip-10-0-1-23.ec2.internal"}}' \
+    --command -- sh -c 'sleep 2; exec check-endpoint "$@"' \
     -- -c 20 --stats https://example.com
 ```
 

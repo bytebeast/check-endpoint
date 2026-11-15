@@ -545,10 +545,13 @@ The general shape is the same everywhere: install the build dependencies, then
 install pycurl into a virtualenv with the SSL backend pinned.
 
 > **Or skip the build entirely.** `docker run --rm -it
-> ghcr.io/bytebeast/check-endpoint https://example.com` needs nothing installed
+> ghcr.io/bytebeast/check-endpoint:3 https://example.com` needs nothing installed
 > beyond Docker. See [Running in a container](#running-in-a-container).
 
 ```bash
+git clone https://github.com/bytebeast/check-endpoint.git
+cd check-endpoint
+
 # Recommended: install pycurl in a pyenv virtualenv
 pyenv virtualenv 3.12.0 check-endpoint-env
 pyenv activate check-endpoint-env
@@ -773,11 +776,13 @@ cluster rather than from your laptop, there's a prebuilt CLI image:
 
 ```bash
 # From anywhere
-docker run --rm -it ghcr.io/bytebeast/check-endpoint -c 10 --stats https://example.com
+docker run --rm -it ghcr.io/bytebeast/check-endpoint:3 -c 10 --stats https://example.com
 
-# One-shot from inside a Kubernetes cluster
-kubectl run check-endpoint --rm -it --restart=Never \
-    --image=ghcr.io/bytebeast/check-endpoint \
+# One-shot from inside a Kubernetes cluster. The sleep lets kubectl attach
+# before output starts, otherwise a row gets clipped.
+kubectl run check-endpoint --rm -it -q --restart=Never \
+    --image=ghcr.io/bytebeast/check-endpoint:3 \
+    --command -- sh -c 'sleep 2; exec check-endpoint "$@"' \
     -- -c 10 --stats https://my-svc.my-ns.svc.cluster.local/health
 ```
 
@@ -916,11 +921,12 @@ exporter image instead; see
 ./check-endpoint.py --prometheus --prometheus-port 9109 https://example.com
 
 # Run from a container, no local pycurl needed
-docker run --rm -it ghcr.io/bytebeast/check-endpoint -c 10 --stats https://example.com
+docker run --rm -it ghcr.io/bytebeast/check-endpoint:3 -c 10 --stats https://example.com
 
 # Probe from inside a Kubernetes cluster
-kubectl run check-endpoint --rm -it --restart=Never \
-    --image=ghcr.io/bytebeast/check-endpoint -- --tls-info https://example.com
+kubectl run check-endpoint --rm -it -q --restart=Never \
+    --image=ghcr.io/bytebeast/check-endpoint:3 \
+    --command -- sh -c 'sleep 2; exec check-endpoint "$@"' -- --tls-info https://example.com
 
 # Send a literal cookie (curl -b style)
 ./check-endpoint.py -b "session=abc123; theme=dark" https://example.com
