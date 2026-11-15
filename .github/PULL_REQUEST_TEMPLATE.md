@@ -3,7 +3,7 @@ location: .github/PULL_REQUEST_TEMPLATE.md
 
 Thanks for contributing to check-endpoint! A few things below are specific
 to how this repo is set up (conventional-commit release automation, a
-duplicated exporter copy, ruff config with a couple of intentional
+duplicated copy of the script under contrib/, ruff config with a couple of intentional
 exceptions) - the rest is standard. Delete any section that doesn't apply.
 -->
 
@@ -45,6 +45,10 @@ list.
 - [ ] `APP_VERSION` in `check-endpoint.py`
 - [ ] `version` in `pyproject.toml`
 - [ ] `APP_VERSION` in `contrib/check-endpoint-exporter/check-endpoint.py`
+- [ ] `APP_VERSION` in `contrib/check-endpoint-cli/check-endpoint.py`
+- [ ] The version badge in `README.md`
+- [ ] `appVersion` in `contrib/check-endpoint-exporter/helm/check-endpoint-exporter/Chart.yaml`
+- [ ] The image tag in `contrib/check-endpoint-exporter/kubernetes/deployment.yaml`
 - [ ] `CHANGELOG.md`
 
 These are written automatically by the `chore(release):` PR the release workflow
@@ -72,16 +76,15 @@ manual bump here will conflict with that PR.
       `select = ["E4","E7","E9","F","W","I","UP","B","S"]`, line length 88,
       double quotes)
 
-## contrib/check-endpoint-exporter/check-endpoint.py
+## contrib copies of check-endpoint.py
 
-- [ ] N/A - this PR doesn't touch core request/output logic
-- [ ] This is a bug fix or behavior change that also applies to the exporter's
-      copy of the script, and I've mirrored it there
-- [ ] This is exporter-specific and intentionally doesn't touch
-      `check-endpoint.py`
+- [ ] N/A - this PR doesn't touch `check-endpoint.py`
+- [ ] I've copied `check-endpoint.py` over both contrib copies:
+      `cp check-endpoint.py contrib/check-endpoint-cli/ && cp check-endpoint.py contrib/check-endpoint-exporter/`
 
-(Ruff is configured to skip linting this file a second time since it's a
-duplicate of the main script - see `extend-exclude` in `pyproject.toml`.)
+Both copies must stay byte-identical to the root script; the `sync-check`
+workflow and `test_contrib_copies_match_root_script` fail otherwise. Ruff skips
+them since they are duplicates - see `extend-exclude` in `pyproject.toml`.
 
 ## Anything reviewers should know
 

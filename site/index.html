@@ -118,6 +118,8 @@
   section { padding: 110px 0 0; }
   .eyebrow { font: 12px var(--mono); color: var(--mauve); letter-spacing: .12em; text-transform: uppercase; }
   h2 { font-size: clamp(28px, 3.6vw, 42px); letter-spacing: -.025em; line-height: 1.15; margin: 10px 0 12px; }
+  /* The heading's negative tracking crams monospace glyphs together. */
+  h2 code { color: var(--peach); font-weight: 600; letter-spacing: 0; }
   .intro { color: var(--subtext0); max-width: 620px; margin-bottom: 44px; }
 
   .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(290px, 1fr)); gap: 14px; }
