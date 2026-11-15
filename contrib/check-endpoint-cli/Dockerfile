@@ -11,7 +11,7 @@
 # Multi-arch, since laptops are usually arm64 and clusters usually amd64:
 #   docker buildx build --platform linux/amd64,linux/arm64 \
 #       -f contrib/check-endpoint-cli/Dockerfile \
-#       -t ghcr.io/bytebeast/check-endpoint:latest --push .
+#       -t ghcr.io/bytebeast/check-endpoint:dev --push .
 
 # Pinned so the image is reproducible: without this, a new pycurl release
 # silently changes what gets built. Bump deliberately.
