@@ -234,17 +234,19 @@
     <p class="intro">A single Python script on top of pycurl. Or skip the build and use the image.</p>
     <div class="runs">
       <div class="run"><h3>local<button type="button">copy</button></h3><pre><span class="c"># pycurl must match libcurl's TLS backend</span>
+git clone https://github.com/bytebeast/check-endpoint.git
+cd check-endpoint
 python3 -m venv ~/.venvs/check-endpoint
 source ~/.venvs/check-endpoint/bin/activate
 PYCURL_SSL_LIBRARY=openssl pip install pycurl
 ./check-endpoint.py -c 10 --stats https://example.com</pre></div>
       <div class="run"><h3>docker<button type="button">copy</button></h3><pre><span class="c"># nothing to install beyond Docker</span>
 docker run --rm -it \
-  ghcr.io/bytebeast/check-endpoint:3.0.0 \
+  ghcr.io/bytebeast/check-endpoint:3 \
   -c 10 --stats https://example.com</pre></div>
       <div class="run"><h3>kubernetes<button type="button">copy</button></h3><pre><span class="c"># probe from inside the cluster</span>
 kubectl run check-endpoint --rm -it --restart=Never \
-  --image=ghcr.io/bytebeast/check-endpoint:3.0.0 \
+  --image=ghcr.io/bytebeast/check-endpoint:3 \
   -- --tls-info https://my-svc.my-ns.svc.cluster.local/health</pre></div>
     </div>
   </section>
