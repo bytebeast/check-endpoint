@@ -28,8 +28,9 @@ line-length = 88
 
 exclude = [".git", "__pycache__", ".venv"]
 
-# The exporter ships a copy of the script. Lint it once, not twice.
-extend-exclude = ["contrib/check-endpoint-exporter/check-endpoint.py"]
+# Both contrib images ship a byte-identical copy of the script (enforced by
+# sync-check). Lint it once, not three times.
+extend-exclude = ["contrib/*/check-endpoint.py"]
 
 [tool.ruff.lint]
 # E4/E7/E9 rather than the whole E group: keeps the real pycodestyle errors
