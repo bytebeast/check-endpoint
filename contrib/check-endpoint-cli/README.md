@@ -21,7 +21,7 @@ Multi-arch, since laptops are usually arm64 and clusters usually amd64:
 ```bash
 docker buildx build --platform linux/amd64,linux/arm64 \
     -f contrib/check-endpoint-cli/Dockerfile \
-    -t ghcr.io/bytebeast/check-endpoint:latest --push .
+    -t ghcr.io/bytebeast/check-endpoint:dev --push .
 ```
 
 With extra diagnostic tools baked in, which is often worth it for a debug image:
@@ -137,7 +137,7 @@ check-endpoint --tls-info https://external-api.example.com
 
 ```bash
 kubectl run check-endpoint --rm -it --restart=Never \
-    --image=ghcr.io/bytebeast/check-endpoint:latest \
+    --image=ghcr.io/bytebeast/check-endpoint:3 \
     -- -c 10 --stats https://example.com
 ```
 
@@ -150,7 +150,7 @@ Timing varies by where you land. To probe from a particular node:
 
 ```bash
 kubectl run check-endpoint --rm -it --restart=Never \
-    --image=ghcr.io/bytebeast/check-endpoint:latest \
+    --image=ghcr.io/bytebeast/check-endpoint:3 \
     --overrides='{"spec":{"nodeName":"ip-10-0-1-23.ec2.internal"}}' \
     -- -c 20 --stats https://example.com
 ```

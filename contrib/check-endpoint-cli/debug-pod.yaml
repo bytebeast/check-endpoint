@@ -16,11 +16,6 @@ metadata:
   labels:
     app.kubernetes.io/name: check-endpoint
   annotations:
-    # This is an ad-hoc debug pod, not a deployed workload: you edit the tag to
-    # whatever you are investigating with before applying it. Pinning a version
-    # here would go stale on every release and get ignored.
-    ignore-check.kube-linter.io/latest-tag: >-
-      debug pod; the operator sets the tag at apply time
     # See the resources block below - a CPU limit throttles the prober and
     # corrupts the very measurements this pod exists to take. (This check is
     # currently satisfied by the CPU request alone; the ignore is here so a
@@ -72,7 +67,9 @@ spec:
 
   containers:
     - name: check-endpoint
-      image: ghcr.io/bytebeast/check-endpoint:latest
+      # The major tag moves with every 3.x release, so this never goes stale
+      # the way a pinned patch version would.
+      image: ghcr.io/bytebeast/check-endpoint:3
       imagePullPolicy: Always
 
       # Keep the pod alive so you can exec in repeatedly. The image's entrypoint
