@@ -1,5 +1,22 @@
 # Changelog
 
+## v3.2.0 (2026-11-17)
+
+### Features
+
+- **cli**: send browser Accept headers with browser UA aliases
+
+### Documentation
+
+- **readme**: link the project site near the top
+- **site**: fix install examples
+- **cli**: replace latest image tags with :3 and :dev
+- fix kubectl run attach race and pin image tags
+- add CLAUDE.md for Claude Code
+- **site**: make curl -w stand out in the features heading
+
+<!-- also in this release: chore, ci -->
+
 ## v3.1.0 (2026-11-14)
 
 ### Features
