@@ -495,6 +495,8 @@ run, typically a trace or request id).
 - **Content negotiation** - the probe sends `Accept: */*` unless you override
   it; `-H "Accept: application/json"` reveals endpoints that serve HTML to
   generic clients and JSON to specific ones
+- **406 Not Acceptable** - compare `-a curl` with `-a curl-browser`; a 200 on
+  the second means the server wants an HTML `Accept` header, not a browser
 
 ---
 
@@ -959,7 +961,7 @@ kubectl run check-endpoint --rm -it -q --restart=Never \
 | `-t N` / `--timeout N`                          | Per-request timeout in seconds (default: 10)                                                                                                                                                          |
 | `-4` / `--ipv4`                                 | Force IPv4 resolution (default)                                                                                                                                                                       |
 | `-6` / `--ipv6`                                 | Force IPv6 resolution                                                                                                                                                                                 |
-| `-a ALIAS` / `--user-agent ALIAS`               | Use a baked-in UA string: `chrome`, `firefox`, `edge`, `safari`, `googlebot`                                                                                                                          |
+| `-a ALIAS` / `--user-agent ALIAS`               | Use a baked-in UA string: `chrome`, `firefox`, `edge`, `safari`, `googlebot`, `curl`, `pycurl`, `curl-browser`. Browser aliases and `curl-browser` also send browser `Accept`/`Accept-Language` unless `-H` sets them |
 | `-H 'K: V'` / `--header`                        | Custom request header, repeatable                                                                                                                                                                     |
 | `-d DATA` / `--data`                            | Request body (POST); prefix with `@` to read from a file                                                                                                                                              |
 | `-X METHOD` / `--request`                       | Force an HTTP method (e.g. `PUT`, `DELETE`)                                                                                                                                                           |

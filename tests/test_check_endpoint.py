@@ -71,6 +71,20 @@ def _stall_body(conn):
     time.sleep(30)
 
 
+def _html_only(conn):
+    # Mimics a WAF that answers 406 to clients that do not ask for HTML.
+    try:
+        req = conn.recv(65536).lower()
+        status = b"200 OK" if b"\r\naccept: text/html" in req else b"406 No"
+        conn.sendall(
+            b"HTTP/1.1 "
+            + status
+            + b"\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+        )
+    finally:
+        conn.close()
+
+
 def _free_port():
     s = socket.socket()
     s.bind(("127.0.0.1", 0))
@@ -118,6 +132,7 @@ def servers(tmp_path_factory):
         "silent": f"http://127.0.0.1:{_listener(_silent)}/",
         "closed": f"http://127.0.0.1:{_listener(_close_now)}/",
         "stall": f"http://127.0.0.1:{_listener(_stall_body)}/",
+        "html_only": f"http://127.0.0.1:{_listener(_html_only)}/",
         "tls_bad_cert": f"https://127.0.0.1:{_listener(tls)}/",
     }
 
@@ -237,6 +252,51 @@ def test_exit_1_when_an_assertion_breaches(servers):
 def test_exit_2_on_bad_arguments(args):
     # 1 means "an assertion breached"; CI must not confuse a typo with that.
     assert run_cli(*args, "http://127.0.0.1:9/").returncode == 2
+
+
+# ---------------------------------------------------------- request headers
+
+
+def _field(headers, name):
+    return [h for h in headers if ce.header_field_name(h) == name]
+
+
+@pytest.mark.parametrize(
+    "alias", ["chrome", "firefox", "edge", "safari", "curl-browser"]
+)
+def test_browser_aliases_add_accept_and_language(alias):
+    headers = ce.build_request_headers([], ce.ALIAS_HEADERS[alias])
+    assert _field(headers, "accept")[0].startswith("Accept: text/html")
+    assert len(_field(headers, "accept-language")) == 1
+
+
+def test_explicit_header_beats_alias_default():
+    headers = ce.build_request_headers(
+        ["Accept: application/json"], ce.ALIAS_HEADERS["chrome"]
+    )
+    assert _field(headers, "accept") == ["Accept: application/json"]
+    assert len(_field(headers, "accept-language")) == 1
+
+
+@pytest.mark.parametrize("alias", ["curl", "pycurl", "googlebot"])
+def test_non_browser_aliases_keep_curl_defaults(alias):
+    headers = ce.build_request_headers([], ce.ALIAS_HEADERS.get(alias, ()))
+    assert headers == ["Accept: */*"]
+
+
+@pytest.mark.parametrize(
+    "args,code",
+    [
+        ([], "406"),
+        (["-a", "curl"], "406"),
+        (["-a", "curl-browser"], "200"),
+        (["-a", "chrome"], "200"),
+        (["-a", "chrome", "-H", "Accept: application/json"], "406"),
+    ],
+)
+def test_alias_headers_reach_the_server(servers, args, code):
+    r = run_cli(servers["html_only"], *args)
+    assert filled(row_cells(r.stdout))["HTTP_CODE"] == code, r.stdout + r.stderr
 
 
 # ------------------------------------------------------------------ color
