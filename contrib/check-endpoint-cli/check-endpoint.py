@@ -108,6 +108,28 @@ USER_AGENTS = {
     # The previous value of the "curl" alias, kept under its own name so
     # existing scripts can still reach it.
     "pycurl": "pycurl/8.8.0",
+    # curl's UA with a browser's Accept headers. Tells "the server rejects my
+    # Accept: */*" apart from "the server rejects curl"; a 406 is usually the
+    # former.
+    "curl-browser": "curl/8.8.0",
+}
+
+# Sent alongside a -a alias, each one only when -H did not set that header
+# already. A browser UA with curl's "Accept: */*" is a mismatch some WAFs and
+# CDNs reject (406), so the browser aliases send what that browser sends on a
+# page load. Accept-Encoding is left out on purpose: it would switch the body
+# measurement to compressed bytes.
+_HTML_ACCEPT = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+_CHROMIUM_ACCEPT = (
+    "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,"
+    "image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7"
+)
+ALIAS_HEADERS = {
+    "chrome": (f"Accept: {_CHROMIUM_ACCEPT}", "Accept-Language: en-US,en;q=0.9"),
+    "edge": (f"Accept: {_CHROMIUM_ACCEPT}", "Accept-Language: en-US,en;q=0.9"),
+    "firefox": (f"Accept: {_HTML_ACCEPT}", "Accept-Language: en-US,en;q=0.5"),
+    "safari": (f"Accept: {_HTML_ACCEPT}", "Accept-Language: en-US,en;q=0.9"),
+    "curl-browser": (f"Accept: {_HTML_ACCEPT}", "Accept-Language: en-US,en;q=0.9"),
 }
 
 # ── Catppuccin Mocha theme ────────────────────────────────────────────────────
@@ -738,11 +760,12 @@ def header_field_name(header):
     return header.split(":", 1)[0].strip().lower()
 
 
-def build_request_headers(headers):
+def build_request_headers(headers, alias_headers=()):
     """
     Return the header list to hand to libcurl, with defaults filled in.
 
-    Adds "Accept: */*" unless an Accept header is already present. The match is
+    Adds the -a alias headers (see ALIAS_HEADERS), then "Accept: */*", each
+    unless a header with the same field name is already present. The match is
     on the field name alone, so -H "Accept-Encoding: gzip" and
     -H "Accept-Language: en" are NOT treated as overriding Accept.
 
@@ -751,10 +774,15 @@ def build_request_headers(headers):
     added back underneath it.
     """
     headers = list(headers or [])
-    if not any(header_field_name(h) == "accept" for h in headers):
-        # Prepended so explicit -H values still read last in --show-headers.
-        headers.insert(0, f"Accept: {DEFAULT_ACCEPT}")
-    return headers
+    present = {header_field_name(h) for h in headers}
+    missing = []
+    for default in (*alias_headers, f"Accept: {DEFAULT_ACCEPT}"):
+        name = header_field_name(default)
+        if name not in present:
+            missing.append(default)
+            present.add(name)
+    # Prepended so explicit -H values still read last in --show-headers.
+    return missing + headers
 
 
 # ── cookies ────────────────────────────────────────────────────────────────
@@ -2996,6 +3024,17 @@ USER-AGENT ALIASES (-a/--user-agent)
     googlebot  Googlebot crawler UA
     curl       curl/8.8.0, what the curl(1) command line tool sends
     pycurl     pycurl/8.8.0
+    curl-browser
+               curl/8.8.0 plus a browser's Accept and Accept-Language
+
+  The browser aliases (chrome, firefox, edge, safari) and curl-browser
+  also send that browser's page-load Accept and Accept-Language, because
+  some WAFs and CDNs answer 406 to a browser UA with 'Accept: */*'. If
+  curl-browser gets a 200 where curl gets a 406, the server objects to
+  the Accept header, not to curl.
+
+  This only gets past header checks. Bot protection that fingerprints
+  TLS or HTTP/2 still sees libcurl whichever alias you pick.
 
 DEFAULT REQUEST HEADERS
   Every request carries 'Accept: */*' unless you supply your own Accept
@@ -3005,7 +3044,8 @@ DEFAULT REQUEST HEADERS
     -H "Accept:"                      send no Accept header at all
 
   Accept-Encoding and Accept-Language are separate headers and do not
-  replace the default Accept.
+  replace the default Accept. An Accept or Accept-Language added by -a is
+  replaced the same way by your own -H.
 
 COOKIES (-b/--cookie, -j/--cookie-jar, --show-cookies)
   -b DATA|FILE   curl-compatible, and told apart the same way curl does: if
@@ -3373,6 +3413,8 @@ WHAT IT CAN FIND
     - Content negotiation: the probe sends Accept: */* unless you
       override it; -H "Accept: application/json" reveals endpoints that
       serve HTML to generic clients and JSON to specific ones
+    - 406 Not Acceptable: compare -a curl with -a curl-browser; a 200 on
+      the second means the server wants an HTML Accept header
 
 HTTP/2 SUPPORT
   --http2
@@ -3707,7 +3749,8 @@ NOTE ON -p/-P (IP pinning)
         default=None,
         help=(
             "send a baked-in User-Agent string instead of the default "
-            f"('{DEFAULT_USER_AGENT}'). choices: "
+            f"('{DEFAULT_USER_AGENT}'). Browser aliases and curl-browser also "
+            "send browser Accept/Accept-Language unless -H sets them. choices: "
             + ", ".join(sorted(USER_AGENTS.keys()))
         ),
     )
@@ -4055,6 +4098,11 @@ NOTE ON -p/-P (IP pinning)
         if args.user_agent_alias
         else DEFAULT_USER_AGENT
     )
+    # run_once() calls build_request_headers() again; that pass is a no-op
+    # because Accept is already set here.
+    headers = build_request_headers(
+        args.headers, ALIAS_HEADERS.get(args.user_agent_alias, ())
+    )
     try:
         data = resolve_data_arg(args.data) if args.data is not None else None
     except OSError as exc:
@@ -4264,7 +4312,7 @@ NOTE ON -p/-P (IP pinning)
                 args.timeout,
                 ip_version=ip_version,
                 user_agent=user_agent,
-                headers=args.headers,
+                headers=headers,
                 data=data,
                 method=args.method,
                 force_dns=args.force_dns,
