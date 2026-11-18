@@ -6,7 +6,7 @@ description: >-
   --prometheus.
 type: application
 version: 0.2.0
-appVersion: "3.2.0"
+appVersion: "3.3.0"
 keywords:
   - prometheus
   - exporter

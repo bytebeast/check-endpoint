@@ -1,5 +1,11 @@
 # Changelog
 
+## v3.3.0 (2026-11-18)
+
+### Features
+
+- **cli**: write captures under ./ce-capture by default
+
 ## v3.2.0 (2026-11-17)
 
 ### Features
