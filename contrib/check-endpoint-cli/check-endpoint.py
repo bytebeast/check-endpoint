@@ -3535,8 +3535,8 @@ ANALYSIS, CHECKS, AND EXPORT
     --capture-dir), named for when the command was kicked off plus the pid,
     so concurrent probes never collide:
 
-      {{YYYYMMDDHHMMSS}}-{{pid}}/command-statement.out   the command used
-      {{YYYYMMDDHHMMSS}}-{{pid}}/{{run}}.out              one per recorded run
+      ce-capture/{{YYYYMMDDHHMMSS}}-{{pid}}/command-statement.out   the command used
+      ce-capture/{{YYYYMMDDHHMMSS}}-{{pid}}/{{run}}.out              one per recorded run
 
     Run files are named for the run number as shown in the table's # column,
     so a failing row maps straight to its file. Each contains the outcome,
