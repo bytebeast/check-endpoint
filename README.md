@@ -508,8 +508,10 @@ run, typically a trace or request id).
 - **[pycurl](https://pypi.org/project/pycurl/)** - the only Python dependency;
   everything else the script uses is in the standard library.
 - **A C toolchain and Python headers** - PyPI publishes no pycurl wheels for
-  Linux or BSD, so `pip install pycurl` always compiles from source there. Only
-  Windows gets prebuilt wheels.
+  Linux or BSD, so `pip install pycurl` always compiles from source there.
+  Windows and macOS get prebuilt wheels, the macOS ones with libcurl and OpenSSL
+  bundled inside, so the libcurl and TLS backend items below only apply when
+  building from source.
 - **System libcurl _and_ its development headers** - pycurl links against
   libcurl at build time and needs `curl-config` on `PATH` to find it. Having the
   `curl` binary installed is not sufficient; the `-dev` / `-devel` package is
@@ -598,7 +600,7 @@ curl --version | grep -i HTTP2
 
 | Platform | Packaged pycurl | Build deps | Platform-specific gotcha |
 | --- | --- | --- | --- |
-| macOS | via Homebrew Python | `brew install curl` | - |
+| macOS | prebuilt wheel on PyPI | none (`brew install curl` for a source build) | - |
 | Ubuntu / Debian | `python3-pycurl` | `libcurl4-openssl-dev` | Must not use the gnutls `-dev` variant |
 | RHEL / Rocky / AlmaLinux | `python3-pycurl` | `libcurl-devel` | FIPS mode restricts ciphers; RHEL 8 needs a newer Python |
 | CentOS Stream 9/10 | `python3-pycurl` | `libcurl-devel` | CentOS Linux 7 is EOL - see below |
@@ -609,12 +611,23 @@ curl --version | grep -i HTTP2
 ### macOS
 
 ```bash
-brew install curl
-PYCURL_SSL_LIBRARY=openssl pip install pycurl
+pip install pycurl
 ```
 
-Homebrew's curl is keg-only, so if `curl-config` isn't found, prepend it to
-`PATH` for the build: `PATH="$(brew --prefix curl)/bin:$PATH"`.
+pip installs a prebuilt wheel that carries its own libcurl and OpenSSL, so
+there's nothing to compile and Homebrew's curl isn't needed. That also means
+`curl --version` describes the system curl, not the one pycurl uses; check
+`python3 -c 'import pycurl; print(pycurl.version)'` instead, including for
+`nghttp2` before using `--http2`.
+
+If pip falls back to a source build (no wheel yet for your Python version),
+install Homebrew's curl first. It's keg-only, so prepend it to `PATH` for the
+build:
+
+```bash
+brew install curl
+PATH="$(brew --prefix curl)/bin:$PATH" PYCURL_SSL_LIBRARY=openssl pip install pycurl
+```
 
 ### Ubuntu / Debian
 
@@ -812,6 +825,48 @@ service-mesh sidecars are in
 For scraping metrics continuously rather than running ad-hoc probes, use the
 exporter image instead; see
 [contrib/check-endpoint-exporter](contrib/check-endpoint-exporter/README.md).
+
+---
+
+## Standalone executable (PyInstaller)
+
+For a host with no Python, no compiler and no Docker, build a single binary
+with [PyInstaller](https://pyinstaller.org/) on a machine where the script
+already runs. It bundles the interpreter, pycurl, and the libcurl and OpenSSL
+that pycurl was linked against.
+
+```bash
+# In the same venv pycurl is installed in
+pip install pyinstaller
+pyinstaller --onefile --name check-endpoint check-endpoint.py
+
+./dist/check-endpoint -c 10 --stats https://example.com
+```
+
+Copy `dist/check-endpoint` anywhere on the target's `PATH`. Intermediate files
+go to `build/` and `check-endpoint.spec`, both safe to delete.
+
+Things to know before you ship it around:
+
+- **Build on the platform you'll run on.** PyInstaller doesn't cross-compile. A
+  macOS arm64 build only runs on macOS arm64, and a Linux build needs to be made
+  on Linux for the same architecture.
+- **Linux binaries only run on the same or newer glibc.** Build on the oldest
+  distribution you need to support, or inside a container of it. For Alpine,
+  build on Alpine; a glibc build won't run on musl.
+- **The TLS stack is the build host's, not the target's.** libcurl and OpenSSL
+  come from the build machine, so `TLS_HANDSHAKE` and `PROTO` reflect those
+  versions rather than whatever is installed on the target.
+- **The CA bundle is the target's.** libcurl looks for the trust store at the
+  path it was compiled with on the build host. If that path doesn't exist on the
+  target (a Debian build on RHEL, say), every `https://` probe shows
+  `<TLS-FAIL>`. Pass `--cacert` with the target's bundle from
+  [CA bundle locations](#ca-bundle-locations).
+- **`--onefile` unpacks itself to a temp directory on every run.** That costs
+  some startup time before the first request (the timings themselves aren't
+  affected) and needs a writable temp directory (`$TMPDIR`, else `/tmp`). Use
+  `--onedir` instead to get a directory you copy as a whole, which starts
+  faster.
 
 ---
 
