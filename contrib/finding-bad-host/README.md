@@ -42,8 +42,8 @@ interleaves and you can go read them at your leisure. Anything the probe
 considered a failure also gets recorded in full by `--capture-on failed`, which
 means you get to _read_ what went wrong instead of trying to reproduce it. Those
 captures go in `captures/`, one timestamped folder per failing run. Without
-`--capture-dir` they'd land in whatever directory you ran this from, which gets
-messy fast once a few dozen hosts start misbehaving.
+`--capture-dir` they'd land in `ce-capture/` under whatever directory you ran
+this from.
 
 The `awk 1` wrapper around the IPs file is a small bit of paranoia. It makes
 sure every line ends properly, so a file that's missing its final newline

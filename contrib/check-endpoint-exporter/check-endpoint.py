@@ -3531,8 +3531,9 @@ ANALYSIS, CHECKS, AND EXPORT
                           error   record transport/network failures only
                           Bare --capture-on means 'failed'.
 
-    Each invocation writes one directory, named for when the command was
-    kicked off plus the pid, so concurrent probes never collide:
+    Each invocation writes one directory under ./ce-capture/ (see
+    --capture-dir), named for when the command was kicked off plus the pid,
+    so concurrent probes never collide:
 
       {{YYYYMMDDHHMMSS}}-{{pid}}/command-statement.out   the command used
       {{YYYYMMDDHHMMSS}}-{{pid}}/{{run}}.out              one per recorded run
@@ -3543,7 +3544,8 @@ ANALYSIS, CHECKS, AND EXPORT
     assertion results, response headers, and the response body as raw bytes.
 
     Other flags:
-      --capture-dir DIR        where to put the capture directory (default: .)
+      --capture-dir DIR        where to put the capture directory
+                               (default: ./ce-capture)
       --capture-body-limit SZ  max body bytes per run (default: 256.0KB;
                                accepts 512, 256K, 1M, 2MB)
       --capture-no-body        record timings/status/headers but no body
@@ -3974,10 +3976,10 @@ NOTE ON -p/-P (IP pinning)
     capture_group.add_argument(
         "--capture-dir",
         dest="capture_dir",
-        default=".",
+        default="ce-capture",
         metavar="DIR",
-        help="parent directory for the capture directory (default: current "
-        "directory). Each invocation creates DIR/{YYYYMMDDHHMMSS}-{pid}/",
+        help="parent directory for the capture directory (default: "
+        "./ce-capture). Each invocation creates DIR/{YYYYMMDDHHMMSS}-{pid}/",
     )
     capture_group.add_argument(
         "--capture-body-limit",
