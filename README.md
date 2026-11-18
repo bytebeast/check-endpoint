@@ -139,9 +139,10 @@ it in ways that aren't as convenient with the curl command-line interface.
   headers, body, and every phase timing) so a failure seen in the table can be
   opened and read afterwards instead of re-run and hoped for. Capture every run
   (`all`), or only the ones that matter: `failed`, `assert`, or `error`. Each
-  invocation gets its own `{YYYYMMDDHHMMSS}-{pid}/` directory containing the
-  command statement used and one file per recorded run, named for the run number
-  in the `#` column. Built so it cannot move the timings it exists to explain
+  invocation gets its own `ce-capture/{YYYYMMDDHHMMSS}-{pid}/` directory
+  containing the command statement used and one file per recorded run, named
+  for the run number in the `#` column. Built so it cannot move the timings it
+  exists to explain
 - **Prometheus exporter mode** - `--prometheus` runs as a pull-based exporter
   daemon that re-probes on every scrape; see
   [contrib/check-endpoint-exporter](contrib/check-endpoint-exporter/README.md)
