@@ -381,6 +381,21 @@ def test_capture_no_body_never_writes_the_body(tmp_path):
     assert b"[response-body] (not captured)" in out
 
 
+def test_capture_dir_defaults_to_ce_capture(tmp_path):
+    # Port 1 is refused without binding anything, which is all capture needs.
+    subprocess.run(
+        [sys.executable, str(SCRIPT), "-t", "2", "--capture-on", "all"]
+        + ["http://127.0.0.1:1/"],
+        capture_output=True,
+        timeout=60,
+        cwd=tmp_path,
+    )
+    assert [p.name for p in tmp_path.iterdir()] == ["ce-capture"]
+    (session,) = (tmp_path / "ce-capture").iterdir()
+    assert (session / "command-statement.out").is_file()
+    assert (session / "1.out").is_file()
+
+
 # ------------------------------------------------------------- ip column
 
 

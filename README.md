@@ -990,7 +990,7 @@ kubectl run check-endpoint --rm -it -q --restart=Never \
 | `--capture-header NAME`                         | Capture a specific response header by name and show its value per request in that summary (repeatable, case-insensitive)                                                                              |
 | `--full-cdn`                                    | Show the full comma-chained CDN/cache headers (`x-served-by`, `x-cache`, `x-cache-hits`, `via`); by default these collapse to just the final serving hop with the chain depth noted                   |
 | `--capture-on WHEN`                             | Record full responses to disk. `WHEN` is `never` (default), `all`, `failed`, `assert`, or `error`; bare `--capture-on` means `failed`                                                                 |
-| `--capture-dir DIR`                             | Parent directory for the capture directory (default: current directory)                                                                                                                              |
+| `--capture-dir DIR`                             | Parent directory for the capture directory (default: `./ce-capture`)                                                                                                                                 |
 | `--capture-body-limit SIZE`                     | Max response body bytes recorded per run (default: `256K`; accepts `512`, `256K`, `1M`, `2MB`)                                                                                                       |
 | `--capture-no-body`                             | Record timings, status and headers but not the response body                                                                                                                                         |
 | `--capture-secrets`                             | Record the command statement verbatim; by default `Authorization`-style header values and literal `-b` cookie data are written as `<redacted>`                                                        |
@@ -1316,15 +1316,16 @@ Bare `--capture-on` with no value means `failed`. With no assertions set, `faile
 and `error` mean the same thing, since a transport failure is the only kind of
 failure there is to detect.
 
-**Layout.** Each invocation creates one directory, named for when the command was
-kicked off plus the pid, so repeat runs never overwrite each other and concurrent
-probes never collide:
+**Layout.** Each invocation creates one directory under `./ce-capture/` (change the
+parent with `--capture-dir`), named for when the command was kicked off plus the
+pid, so repeat runs never overwrite each other and concurrent probes never collide:
 
 ```
-20260812142305-48213/
-├── command-statement.out   # the command used, plus run metadata
-├── 3.out                   # run 3
-└── 7.out                   # run 7
+ce-capture/
+└── 20260812142305-48213/
+    ├── command-statement.out   # the command used, plus run metadata
+    ├── 3.out                   # run 3
+    └── 7.out                   # run 7
 ```
 
 Run files are named for the run number exactly as it appears in the table's `#`
