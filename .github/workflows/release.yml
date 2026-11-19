@@ -66,8 +66,14 @@ jobs:
       # "## v<version>" when it prepares a release, so an untagged version
       # WITHOUT a matching CHANGELOG heading did not come from this pipeline
       # and must not be tagged.
+      #
+      # A tag with no GitHub Release means an earlier run pushed the tag and
+      # then failed on a later step. Re-running finishes it: the tag output is
+      # set again so the image and Release steps below run.
       - name: Tag if the committed version has none
         id: tag
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           version=$(sed -n 's/^APP_VERSION *= *"\(.*\)"/\1/p' check-endpoint.py)
           if [ -z "$version" ]; then
@@ -77,8 +83,14 @@ jobs:
           tag="v$version"
 
           if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
-            echo "$tag already exists, nothing to do"
-            echo "tag: \`$tag\` already exists" >> "$GITHUB_STEP_SUMMARY"
+            if gh release view "$tag" >/dev/null 2>&1; then
+              echo "$tag already exists, nothing to do"
+              echo "tag: \`$tag\` already exists" >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            echo "$tag exists but has no GitHub Release; finishing it"
+            echo "tag=$tag" >> "$GITHUB_OUTPUT"
+            echo "tag: \`$tag\` existed without a Release, finishing it" >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
 
@@ -211,6 +223,18 @@ jobs:
           # Force-push so a re-run updates the existing branch rather than
           # failing. The branch only ever holds generated content.
           git push --force origin "$branch"
+
+          # A change of bump level (a feat landing while release/v1.2.4 is open)
+          # opens a new branch. Close the old PR so a stale release, whose
+          # CHANGELOG misses commits it would ship, cannot be merged by mistake.
+          gh pr list --state open --json number,headRefName \
+            --jq '.[] | select(.headRefName | startswith("release/v"))
+                      | "\(.number) \(.headRefName)"' |
+          while read -r number head; do
+            [ "$head" = "$branch" ] && continue
+            gh pr close "$number" --delete-branch --comment "Superseded by \`$branch\`."
+            echo "prepare: closed superseded PR #$number (\`$head\`)" >> "$GITHUB_STEP_SUMMARY"
+          done
 
           if gh pr list --head "$branch" --state open --json number \
                --jq 'length' | grep -qv '^0$'; then

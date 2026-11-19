@@ -21,7 +21,7 @@ because parsers anchor `type(scope):` at the start of the subject and would
 otherwise see no releasable commits at all.
 
 Bump rules:
-    !  or  "BREAKING CHANGE:" in the body   ->  major
+    !  or  "BREAKING CHANGE:" footer        ->  major
     feat                                    ->  minor
     fix, perf                               ->  patch
     anything else (docs, chore, ci, ...)    ->  no release
@@ -105,10 +105,12 @@ COMMIT_RE = re.compile(
 TRAILING_REF_RE = re.compile(rf"\s*\((?P<refs>{REF}(?:\s*,\s*{REF})*)\)\s*$")
 
 # Footer lines in git trailer form. The spec allows ": " or " #" as the
-# separator, so both "Refs: PROJ-1" and "Closes #42" are matched.
+# separator, so both "Refs: PROJ-1" and "Closes #42" are matched. The
+# separator is required: a prose line such as "Fixes the UTF-8 path" must
+# not turn UTF-8 into a ticket ref.
 FOOTER_RE = re.compile(
-    r"(?mi)^\s*(?:refs?|closes?d?|closed|fix(?:e[sd])?|resolves?d?|resolved)"
-    r"\b[:\s]*(?P<value>.+)$"
+    r"(?mi)^(?:refs?|close[sd]?|fix(?:e[sd])?|resolve[sd]?)"
+    r"(?::[ \t]*| (?=#))(?P<value>.+)$"
 )
 
 REF_RE = re.compile(REF)
@@ -126,15 +128,26 @@ SECTIONS = [
 ]
 
 
-def run(*args):
-    return subprocess.run(
-        args, capture_output=True, text=True, check=False
-    ).stdout.strip()
+def run(*args, check=True):
+    """stdout of a command. A failure exits with its stderr unless
+    check=False, so a broken checkout cannot pass as "nothing to release"."""
+    proc = subprocess.run(args, capture_output=True, text=True, check=False)
+    if check and proc.returncode:
+        sys.exit(f"error: {' '.join(args)} failed: {proc.stderr.strip()}")
+    return proc.stdout.strip()
+
+
+def require_full_history():
+    """A shallow clone has no tags, so it would look like a first release
+    and the changelog would hold whatever history happened to be fetched."""
+    if run("git", "rev-parse", "--is-shallow-repository") == "true":
+        sys.exit("error: shallow clone; check out with fetch-depth: 0")
 
 
 def last_tag():
     """Most recent v* tag reachable from HEAD, or None on the first release."""
-    tag = run("git", "describe", "--tags", "--abbrev=0", "--match", "v*")
+    # describe exits non-zero when there is no tag yet, which is expected
+    tag = run("git", "describe", "--tags", "--abbrev=0", "--match", "v*", check=False)
     return tag or None
 
 
@@ -187,7 +200,10 @@ def parse(subject, body):
         return None
     d = m.groupdict()
     d["refs"], d["desc"] = collect_refs(d["prefix_ref"], d["desc"], body)
-    d["breaking"] = bool(d["bang"]) or "BREAKING CHANGE:" in body
+    # The spec makes BREAKING-CHANGE a synonym for BREAKING CHANGE.
+    d["breaking"] = bool(d["bang"]) or bool(
+        re.search(r"(?m)^BREAKING[ -]CHANGE:", body)
+    )
     return d
 
 
@@ -203,7 +219,8 @@ def decide_bump(parsed):
 
 
 def current_version():
-    """Read the version from the first VERSION_FILES entry that exists."""
+    """Read the version from the first VERSION_FILES entry that exists. Only
+    used before the first tag; after that the tag is the source of truth."""
     for name, pattern in VERSION_FILES:
         path = Path(name)
         if not path.is_file():
@@ -224,24 +241,28 @@ def bump(version, level):
 
 
 def write_versions(new, dry_run):
-    """Rewrite every version file. Returns the paths actually changed."""
-    changed = []
+    """Rewrite every version file. Returns the paths actually changed.
+
+    A listed file that is missing or no longer matches its pattern is an
+    error, not a skip: skipping it shipped a release with that file still on
+    the old version. Every file is checked before any is written."""
+    updates = []
     for name, pattern in VERSION_FILES:
         path = Path(name)
-        if not path.is_file():
-            continue
         if path.is_symlink():
             # Same inode as its target, which is already in the list.
             continue
-        text = path.read_text()
-        m = pattern.search(text)
+        m = pattern.search(path.read_text()) if path.is_file() else None
         if not m:
-            continue
+            sys.exit(f"error: no version found in {name}; update VERSION_FILES")
         start, end = m.span("version")
-        new_text = text[:start] + new + text[end:]
-        if new_text != text:
+        updates.append((name, m.string[:start] + new + m.string[end:]))
+
+    changed = []
+    for name, new_text in updates:
+        if new_text != Path(name).read_text():
             if not dry_run:
-                path.write_text(new_text)
+                Path(name).write_text(new_text)
             changed.append(name)
     return changed
 
@@ -299,6 +320,7 @@ def main():
     )
     args = ap.parse_args()
 
+    require_full_history()
     tag = last_tag()
     raw = commits_since(tag)
     parsed = [p for p in (parse(s, b) for s, b in raw) if p]
@@ -311,7 +333,13 @@ def main():
         print("nothing to release: no feat/fix/perf or breaking change found")
         return 2
 
-    old, source = current_version()
+    # Bump from the tag, not the files: a hand-edited version is left
+    # untagged by the release workflow's CHANGELOG gate, and bumping from it
+    # would skip version numbers. write_versions() then overwrites it.
+    if tag:
+        old, source = tag.removeprefix("v"), f"tag {tag}"
+    else:
+        old, source = current_version()
     new = bump(old, level)
     print(f"bump:      {level}  {old} -> {new}   (read from {source})")
 
