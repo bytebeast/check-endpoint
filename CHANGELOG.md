@@ -1,5 +1,16 @@
 # Changelog
 
+## v3.3.1 (2026-11-19)
+
+### Bug Fixes
+
+- **release**: bump from last tag, refuse drift and shallow clones
+
+### Documentation
+
+- show ce-capture/ parent in capture layout docs
+- add PyInstaller standalone build and macOS wheel notes
+
 ## v3.3.0 (2026-11-18)
 
 ### Features
