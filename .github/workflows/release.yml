@@ -157,6 +157,11 @@ jobs:
       # A branch pushed and a PR opened with GITHUB_TOKEN start every
       # pull_request workflow as a zero-job failure, so release PRs never got
       # real checks. Acting as a GitHub App makes them run normally.
+      #
+      # workflows: write because rebuilding an open release branch on a main
+      # that changed a workflow file (a Dependabot action bump, say) is, to
+      # GitHub, the App updating that workflow. Without it the push is
+      # rejected. The token is scoped to this repository.
       - uses: actions/create-github-app-token@v3
         id: app-token
         with:
@@ -164,6 +169,7 @@ jobs:
           private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
           permission-contents: write
           permission-pull-requests: write
+          permission-workflows: write
 
       # persist-credentials stays on: this job pushes the release branch.
       - uses: actions/checkout@v4 # zizmor: ignore[artipacked]
@@ -212,6 +218,17 @@ jobs:
           FILES: ${{ steps.bump.outputs.files }}
         run: |
           branch="release/$TAG"
+
+          # A run can still be working when a later merge lands. Acting on its
+          # stale checkout reopened a release PR that had just been merged
+          # (seen in cidrsculpter #18, then #22). Only the run for the current tip of
+          # main prepares a release; every later push has its own run.
+          git fetch -q origin main
+          if [ "$(git rev-parse origin/main)" != "$GITHUB_SHA" ]; then
+            echo "main has moved past $GITHUB_SHA; leaving this to the newer run"
+            echo "prepare: skipped, main moved on and a newer run handles it" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
 
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
